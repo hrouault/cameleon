@@ -6,7 +6,7 @@ use std::{convert::TryInto, io::Write};
 
 use cameleon_impl::bytes_io::WriteBytes;
 
-use crate::u3v::{Error, Result};
+use crate::u3v::{Result, U3vError};
 
 #[derive(Debug)]
 pub struct CommandPacket<T> {
@@ -119,7 +119,7 @@ impl ReadMem {
                 "ack length must be larger than {}",
                 CommandPacket::<ReadMem>::ACK_HEADER_LENGTH
             );
-            return Err(Error::InvalidPacket(msg.into()));
+            return Err(U3vError::InvalidPacket(msg.into()));
         };
         let maximum_read_length = ack_len - ack_header_length;
 
@@ -210,7 +210,7 @@ impl<'a> WriteMem<'a> {
                 "cmd_len must be larger than {}",
                 CommandPacket::<WriteMem>::header_len() + 8
             );
-            return Err(Error::InvalidPacket(msg.into()));
+            return Err(U3vError::InvalidPacket(msg.into()));
         };
         let maximum_data_len = cmd_len - cmd_header_len;
 
@@ -251,7 +251,7 @@ impl ReadMemStacked {
         let mut acc: u16 = 0;
         for ent in entries {
             acc = acc.checked_add(ent.read_length).ok_or_else(|| {
-                Error::InvalidPacket("total read length must be less than u16::MAX".into())
+                U3vError::InvalidPacket("total read length must be less than u16::MAX".into())
             })?;
         }
 
@@ -506,7 +506,7 @@ impl<'a> CommandScd for WriteMemStacked<'a> {
 
 fn into_scd_len(len: usize) -> Result<u16> {
     len.try_into()
-        .map_err(|_| Error::InvalidPacket("scd length must be less than u16::MAX".into()))
+        .map_err(|_| U3vError::InvalidPacket("scd length must be less than u16::MAX".into()))
 }
 
 #[cfg(test)]

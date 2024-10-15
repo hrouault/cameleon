@@ -2,15 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use cameleon_impl::bytes_io::ReadBytes;
-use semver::Version;
-
-use crate::u3v::{BusSpeed, DeviceInfo, Error, Result};
-
 use super::{
     channel::{ControlIfaceInfo, ReceiveIfaceInfo},
-    device::{Device, RusbDevice, RusbDeviceHandle},
+    device::Device,
 };
+use crate::u3v::{BusSpeed, DeviceInfo, Result, U3vError};
+use nusb::{
+    descriptors::{self, language_id::US_ENGLISH, Descriptor},
+    transfer::{Direction, EndpointType},
+};
+use semver::Version;
+use std::time::Duration;
 
 const MISCELLANEOUS_CLASS: u8 = 0xEF;
 
@@ -23,57 +25,51 @@ const IAD_FUNCTION_PROTOCOL: u8 = 0x00;
 const USB3V_SUBCLASS: u8 = 0x05;
 
 pub fn enumerate_devices() -> Result<Vec<Device>> {
-    let rusb_device_list = rusb::DeviceList::new()?;
-    let builders = rusb_device_list
-        .iter()
-        .filter_map(|dev| DeviceBuilder::new(dev).ok().flatten());
-
+    let builders = nusb::list_devices()?.filter_map(|di| DeviceBuilder::new(di).ok().flatten());
     Ok(builders
         .filter_map(|builder| builder.build().ok())
         .collect())
 }
 
 struct DeviceBuilder {
-    device: RusbDevice,
+    di: nusb::DeviceInfo,
+    device: nusb::Device,
     u3v_iad: Iad,
-    config_desc: rusb::ConfigDescriptor,
+    // config_desc: descriptors::Configuration,
 }
 
 impl DeviceBuilder {
-    fn new(device: RusbDevice) -> Result<Option<Self>> {
-        let device_desc = device.device_descriptor()?;
-
-        if device_desc.class_code() == MISCELLANEOUS_CLASS
-            && device_desc.sub_class_code() == DEVICE_SUBCLASS
-            && device_desc.protocol_code() == DEVICE_PROTOCOL
+    fn new(di: nusb::DeviceInfo) -> Result<Option<Self>> {
+        if di.class() == MISCELLANEOUS_CLASS
+            && di.subclass() == DEVICE_SUBCLASS
+            && di.protocol() == DEVICE_PROTOCOL
         {
-            if let Some((iad, conf_desc)) = Self::find_u3v_iad(&device, &device_desc)? {
+            let device = di.open()?;
+            if let Some((iad, conf_desc)) = Self::find_u3v_iad(&device)? {
                 return Ok(Some(Self {
+                    di,
                     device,
                     u3v_iad: iad,
-                    config_desc: conf_desc,
+                    // config_desc: conf_desc,
                 }));
             }
         }
-
         Ok(None)
     }
 
     fn build(self) -> Result<Device> {
-        // TODO: Log it when device is broken or invalid.
-        let dev_channel = self.device.open()?;
-        if dev_channel.active_configuration()? != self.config_desc.number() {
-            dev_channel.set_active_configuration(self.config_desc.number())?;
-        }
-
         // Skip interfaces while control interface is appeared.
         let mut interfaces = self
-            .config_desc
+            .di
             .interfaces()
-            .skip_while(|iface| iface.number() != self.u3v_iad.first_interface);
+            .skip_while(|iface| iface.interface_number() != self.u3v_iad.first_interface);
 
         // Retrieve control interface information.
-        let ctrl_iface = interfaces.next().ok_or(Error::InvalidDevice)?;
+        let ctrl_iface_info = interfaces.next().ok_or(U3vError::InvalidDevice)?;
+        let ctrl_iface = self
+            .device
+            .claim_interface(ctrl_iface_info.interface_number())?;
+
         let ctrl_iface_info = ControlIfaceInfo::new(&ctrl_iface)?;
 
         // Retrieve device information.
@@ -81,18 +77,28 @@ impl DeviceBuilder {
         let ctrl_iface_desc = ctrl_iface
             .descriptors()
             .next()
-            .ok_or(Error::InvalidDevice)?;
-        let device_info_desc = ctrl_iface_desc.extra();
-        let device_info_desc = DeviceInfoDescriptor::from_bytes(device_info_desc)?;
-        let device_info = device_info_desc.interpret(&dev_channel)?;
+            .ok_or(U3vError::InvalidDevice)?;
+        let iface_desc = ctrl_iface_desc.descriptors();
+        let device_info = iface_desc
+            .filter_map(|iface| DeviceInfoDescriptor::from_desc(&iface).ok())
+            .next()
+            .unwrap()
+            .interpret(&self.device)?;
 
         // Retrieve event and stream interface information if exists.
-        let receive_ifaces = interfaces.filter_map(|iface| ReceiveIfaceInfo::new(&iface));
+        let receive_ifaces = interfaces.filter_map(|iface| {
+            ReceiveIfaceInfo::new(
+                &self
+                    .device
+                    .claim_interface(iface.interface_number())
+                    .unwrap(),
+            )
+        });
         let mut receive_ifaces: Vec<(ReceiveIfaceInfo, ReceiveIfaceKind)> =
             receive_ifaces.collect();
 
         if receive_ifaces.len() > 2 {
-            return Err(Error::InvalidDevice);
+            return Err(U3vError::InvalidDevice);
         }
 
         let (event_iface, stream_iface) = match receive_ifaces.pop() {
@@ -101,14 +107,14 @@ impl DeviceBuilder {
                     (Some(event_iface), Some(stream_iface))
                 }
                 None => (Some(event_iface), None),
-                Some(_) => return Err(Error::InvalidDevice),
+                Some(_) => return Err(U3vError::InvalidDevice),
             },
             Some((stream_iface, ReceiveIfaceKind::Stream)) => match receive_ifaces.pop() {
                 Some((event_iface, ReceiveIfaceKind::Event)) => {
                     (Some(event_iface), Some(stream_iface))
                 }
                 None => (None, Some(stream_iface)),
-                Some(_) => return Err(Error::InvalidDevice),
+                Some(_) => return Err(U3vError::InvalidDevice),
             },
             None => (None, None),
         };
@@ -122,32 +128,34 @@ impl DeviceBuilder {
         ))
     }
 
-    fn find_u3v_iad(
-        device: &RusbDevice,
-        device_desc: &rusb::DeviceDescriptor,
-    ) -> Result<Option<(Iad, rusb::ConfigDescriptor)>> {
-        let num_config_desc = device_desc.num_configurations();
-
-        for config_index in 0..num_config_desc {
-            let config_desc = device.config_descriptor(config_index)?;
-            if let Some(u3v_iad) = Self::find_u3v_iad_in_config_desc(&config_desc) {
-                return Ok(Some((u3v_iad, config_desc)));
+    fn find_u3v_iad(device: &nusb::Device) -> Result<Option<(Iad, descriptors::Configuration)>> {
+        for conf in device.configurations() {
+            if let Some(u3v_iad) = Self::find_u3v_iad_in_config(&device, &conf) {
+                return Ok(Some((u3v_iad, conf)));
             }
         }
 
         Ok(None)
     }
 
-    fn find_u3v_iad_in_config_desc(desc: &rusb::ConfigDescriptor) -> Option<Iad> {
-        if let Some(iad) = Iad::from_bytes(desc.extra()) {
-            if Self::is_u3v_iad(&iad) {
-                return Some(iad);
+    fn find_u3v_iad_in_config(
+        device: &nusb::Device,
+        conf: &descriptors::Configuration,
+    ) -> Option<Iad> {
+        for desc in conf.descriptors() {
+            if let Some(iad) = Iad::from_desc(desc) {
+                if Self::is_u3v_iad(&iad) {
+                    return Some(iad);
+                }
             }
         }
 
-        for iface in desc.interfaces() {
+        for iface_ind in conf.interfaces() {
+            let iface = device
+                .claim_interface(iface_ind.interface_number())
+                .unwrap();
             for if_desc in iface.descriptors() {
-                if let Some(u3v_iad) = Self::find_u3v_iad_in_if_desc(&if_desc) {
+                if let Some(u3v_iad) = Self::find_u3v_iad_in_ifce(&if_desc) {
                     return Some(u3v_iad);
                 }
             }
@@ -156,15 +164,17 @@ impl DeviceBuilder {
         None
     }
 
-    fn find_u3v_iad_in_if_desc(desc: &rusb::InterfaceDescriptor) -> Option<Iad> {
-        if let Some(iad) = Iad::from_bytes(desc.extra()) {
-            if Self::is_u3v_iad(&iad) {
-                return Some(iad);
+    fn find_u3v_iad_in_ifce(ifce: &descriptors::InterfaceAltSetting) -> Option<Iad> {
+        for desc in ifce.descriptors() {
+            if let Some(iad) = Iad::from_desc(desc) {
+                if Self::is_u3v_iad(&iad) {
+                    return Some(iad);
+                }
             }
         }
 
-        for ep_desc in desc.endpoint_descriptors() {
-            if let Some(u3v_iad) = Self::find_u3v_iad_in_ep_desc(&ep_desc) {
+        for ep_desc in ifce.endpoints() {
+            if let Some(u3v_iad) = Self::find_u3v_iad_in_ep(&ep_desc) {
                 return Some(u3v_iad);
             }
         }
@@ -172,9 +182,9 @@ impl DeviceBuilder {
         None
     }
 
-    fn find_u3v_iad_in_ep_desc(desc: &rusb::EndpointDescriptor) -> Option<Iad> {
-        if let Some(extra) = desc.extra() {
-            if let Some(iad) = Iad::from_bytes(extra) {
+    fn find_u3v_iad_in_ep(ep_desc: &descriptors::Endpoint) -> Option<Iad> {
+        for desc in ep_desc.descriptors() {
+            if let Some(iad) = Iad::from_desc(desc) {
                 if Self::is_u3v_iad(&iad) {
                     return Some(iad);
                 }
@@ -205,44 +215,32 @@ struct Iad {
 }
 
 impl Iad {
-    fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        let mut read = 0;
-        let len = bytes.len();
-
-        while read < len {
-            let desc_length = bytes[read];
-            if desc_length == 0 {
-                break;
-            } else if desc_length == 1 {
-                read += desc_length as usize;
-                continue;
-            }
-
-            let descriptor_type = bytes[read + 1];
-            if descriptor_type != IAD_DESC_TYPE {
-                read += desc_length as usize;
-                continue;
-            }
-
-            let first_interface = bytes[read + 2];
-            let interface_count = bytes[read + 3];
-            let function_class = bytes[read + 4];
-            let function_subclass = bytes[read + 5];
-            let function_protocol = bytes[read + 6];
-            let function = bytes[read + 7];
-            return Some(Self {
-                length: desc_length,
-                descriptor_type,
-                first_interface,
-                interface_count,
-                function_class,
-                function_subclass,
-                function_protocol,
-                function,
-            });
+    fn from_desc(desc: Descriptor) -> Option<Self> {
+        let desc_length = desc.descriptor_len();
+        if desc_length == 0 {
+            return None;
+        }
+        let descriptor_type = desc.descriptor_type();
+        if descriptor_type != IAD_DESC_TYPE {
+            return None;
         }
 
-        None
+        let first_interface = desc[2];
+        let interface_count = desc[3];
+        let function_class = desc[4];
+        let function_subclass = desc[5];
+        let function_protocol = desc[6];
+        let function = desc[7];
+        return Some(Self {
+            length: desc_length as u8,
+            descriptor_type,
+            first_interface,
+            interface_count,
+            function_class,
+            function_subclass,
+            function_protocol,
+            function,
+        });
     }
 }
 
@@ -273,38 +271,34 @@ impl DeviceInfoDescriptor {
     const DESCRIPTOR_TYPE: u8 = 0x24;
     const DESCRIPTOR_SUBTYPE: u8 = 0x1;
 
-    fn from_bytes(mut bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < Self::MINIMUM_DESC_LENGTH as usize {
-            return Err(Error::InvalidDevice);
-        }
+    fn from_desc(desc: &Descriptor) -> Result<Self> {
+        let desc_length = desc.descriptor_len();
+        let descriptor_type = desc.descriptor_type();
+        let descriptor_subtype = desc[2];
 
-        let length: u8 = bytes.read_bytes_le()?;
-        let descriptor_type = bytes.read_bytes_le()?;
-        let descriptor_subtype = bytes.read_bytes_le()?;
-
-        if length < Self::MINIMUM_DESC_LENGTH
+        if desc_length < Self::MINIMUM_DESC_LENGTH as usize
             || descriptor_type != Self::DESCRIPTOR_TYPE
             || descriptor_subtype != Self::DESCRIPTOR_SUBTYPE
         {
-            return Err(Error::InvalidDevice);
+            return Err(U3vError::InvalidDevice);
         }
 
-        let gencp_version_minor = bytes.read_bytes_le()?;
-        let gencp_version_major = bytes.read_bytes_le()?;
-        let u3v_version_minor = bytes.read_bytes_le()?;
-        let u3v_version_major = bytes.read_bytes_le()?;
-        let guid_idx = bytes.read_bytes_le()?;
-        let vendor_name_idx = bytes.read_bytes_le()?;
-        let model_name_idx = bytes.read_bytes_le()?;
-        let family_name_idx = bytes.read_bytes_le()?;
-        let device_version_idx = bytes.read_bytes_le()?;
-        let manufacturer_info_idx = bytes.read_bytes_le()?;
-        let serial_number_idx = bytes.read_bytes_le()?;
-        let user_defined_name_idx = bytes.read_bytes_le()?;
-        let supported_speed_mask = bytes.read_bytes_le()?;
+        let gencp_version_minor = u16::from_le_bytes(desc[3..5].try_into().unwrap());
+        let gencp_version_major = u16::from_le_bytes(desc[5..7].try_into().unwrap());
+        let u3v_version_minor = u16::from_le_bytes(desc[7..9].try_into().unwrap());
+        let u3v_version_major = u16::from_le_bytes(desc[9..11].try_into().unwrap());
+        let guid_idx = desc[12];
+        let vendor_name_idx = desc[13];
+        let model_name_idx = desc[14];
+        let family_name_idx = desc[15];
+        let device_version_idx = desc[16];
+        let manufacturer_info_idx = desc[17];
+        let serial_number_idx = desc[18];
+        let user_defined_name_idx = desc[19];
+        let supported_speed_mask = desc[20];
 
         Ok(Self {
-            length,
+            length: desc_length as u8,
             descriptor_type,
             descriptor_subtype,
             gencp_version_major,
@@ -323,7 +317,7 @@ impl DeviceInfoDescriptor {
         })
     }
 
-    fn interpret(&self, channel: &RusbDeviceHandle) -> Result<DeviceInfo> {
+    fn interpret(&self, channel: &nusb::Device) -> Result<DeviceInfo> {
         let gencp_version = Version::new(
             self.gencp_version_major.into(),
             self.gencp_version_minor.into(),
@@ -336,22 +330,51 @@ impl DeviceInfoDescriptor {
             0,
         );
 
-        let guid = channel.read_string_descriptor_ascii(self.guid_idx)?;
-        let vendor_name = channel.read_string_descriptor_ascii(self.vendor_name_idx)?;
-        let model_name = channel.read_string_descriptor_ascii(self.model_name_idx)?;
+        let guid =
+            channel.get_string_descriptor(self.guid_idx, US_ENGLISH, Duration::from_millis(100))?;
+        let vendor_name = channel.get_string_descriptor(
+            self.vendor_name_idx,
+            US_ENGLISH,
+            Duration::from_millis(100),
+        )?;
+        let model_name = channel.get_string_descriptor(
+            self.model_name_idx,
+            US_ENGLISH,
+            Duration::from_millis(100),
+        )?;
         let family_name = if self.family_name_idx == 0 {
             None
         } else {
-            Some(channel.read_string_descriptor_ascii(self.family_name_idx)?)
+            Some(channel.get_string_descriptor(
+                self.family_name_idx,
+                US_ENGLISH,
+                Duration::from_millis(100),
+            )?)
         };
 
-        let device_version = channel.read_string_descriptor_ascii(self.device_version_idx)?;
-        let manufacturer_info = channel.read_string_descriptor_ascii(self.manufacturer_info_idx)?;
-        let serial_number = channel.read_string_descriptor_ascii(self.serial_number_idx)?;
+        let device_version = channel.get_string_descriptor(
+            self.device_version_idx,
+            US_ENGLISH,
+            Duration::from_millis(100),
+        )?;
+        let manufacturer_info = channel.get_string_descriptor(
+            self.manufacturer_info_idx,
+            US_ENGLISH,
+            Duration::from_millis(100),
+        )?;
+        let serial_number = channel.get_string_descriptor(
+            self.serial_number_idx,
+            US_ENGLISH,
+            Duration::from_millis(100),
+        )?;
         let user_defined_name = if self.user_defined_name_idx == 0 {
             None
         } else {
-            Some(channel.read_string_descriptor_ascii(self.user_defined_name_idx)?)
+            Some(channel.get_string_descriptor(
+                self.user_defined_name_idx,
+                US_ENGLISH,
+                Duration::from_millis(100),
+            )?)
         };
         let supported_speed = if self.supported_speed_mask >> 4_i32 & 0b1 == 1 {
             BusSpeed::SuperSpeedPlus
@@ -364,7 +387,7 @@ impl DeviceInfoDescriptor {
         } else if self.supported_speed_mask & 0b1 == 1 {
             BusSpeed::LowSpeed
         } else {
-            return Err(Error::InvalidDevice);
+            return Err(U3vError::InvalidDevice);
         };
 
         Ok(DeviceInfo {
@@ -386,33 +409,33 @@ impl DeviceInfoDescriptor {
 impl ControlIfaceInfo {
     const CONTROL_IFACE_PROTOCOL: u8 = 0x00;
 
-    fn new(iface: &rusb::Interface) -> Result<Self> {
-        let iface_number = iface.number();
-        let iface_desc = iface.descriptors().next().ok_or(Error::InvalidDevice)?;
+    fn new(iface: &nusb::Interface) -> Result<Self> {
+        let iface_number = iface.interface_number();
+        let iface_desc = iface.descriptors().next().ok_or(U3vError::InvalidDevice)?;
 
-        if iface_desc.class_code() != MISCELLANEOUS_CLASS
-            || iface_desc.sub_class_code() != USB3V_SUBCLASS
-            || iface_desc.protocol_code() != Self::CONTROL_IFACE_PROTOCOL
+        if iface_desc.class() != MISCELLANEOUS_CLASS
+            || iface_desc.subclass() != USB3V_SUBCLASS
+            || iface_desc.protocol() != Self::CONTROL_IFACE_PROTOCOL
         {
-            return Err(Error::InvalidDevice);
+            return Err(U3vError::InvalidDevice);
         }
 
-        let eps: Vec<rusb::EndpointDescriptor> = iface_desc.endpoint_descriptors().collect();
+        let eps: Vec<descriptors::Endpoint> = iface_desc.endpoints().collect();
         if eps.len() != 2 {
-            return Err(Error::InvalidDevice);
+            return Err(U3vError::InvalidDevice);
         }
         let ep_in = eps
             .iter()
-            .find(|ep| ep.direction() == rusb::Direction::In)
-            .ok_or(Error::InvalidDevice)?;
+            .find(|ep| ep.direction() == Direction::In)
+            .ok_or(U3vError::InvalidDevice)?;
         let ep_out = eps
             .iter()
-            .find(|ep| ep.direction() == rusb::Direction::Out)
-            .ok_or(Error::InvalidDevice)?;
-        if ep_in.transfer_type() != rusb::TransferType::Bulk
-            || ep_out.transfer_type() != rusb::TransferType::Bulk
+            .find(|ep| ep.direction() == Direction::Out)
+            .ok_or(U3vError::InvalidDevice)?;
+        if ep_in.transfer_type() != EndpointType::Bulk
+            || ep_out.transfer_type() != EndpointType::Bulk
         {
-            return Err(Error::InvalidDevice);
+            return Err(U3vError::InvalidDevice);
         }
 
         Ok(Self {
@@ -427,18 +450,18 @@ impl ReceiveIfaceInfo {
     const EVENT_IFACE_PROTOCOL: u8 = 0x01;
     const STREAM_IFACE_PROTOCOL: u8 = 0x02;
 
-    fn new(iface: &rusb::Interface) -> Option<(Self, ReceiveIfaceKind)> {
-        let iface_number = iface.number();
+    fn new(iface: &nusb::Interface) -> Option<(Self, ReceiveIfaceKind)> {
+        let iface_number = iface.interface_number();
         for desc in iface.descriptors() {
-            if desc.setting_number() != 0 {
+            if desc.interface_number() != 0 {
                 continue;
             }
 
-            if desc.class_code() != MISCELLANEOUS_CLASS || desc.sub_class_code() != USB3V_SUBCLASS {
+            if desc.class() != MISCELLANEOUS_CLASS || desc.subclass() != USB3V_SUBCLASS {
                 return None;
             }
 
-            let iface_kind = match desc.protocol_code() {
+            let iface_kind = match desc.protocol() {
                 Self::EVENT_IFACE_PROTOCOL => ReceiveIfaceKind::Event,
                 Self::STREAM_IFACE_PROTOCOL => ReceiveIfaceKind::Stream,
                 _ => return None,
@@ -447,10 +470,8 @@ impl ReceiveIfaceInfo {
             if desc.num_endpoints() != 1 {
                 return None;
             }
-            let ep = desc.endpoint_descriptors().next().unwrap();
-            if ep.transfer_type() != rusb::TransferType::Bulk
-                || ep.direction() != rusb::Direction::In
-            {
+            let ep = desc.endpoints().next().unwrap();
+            if ep.transfer_type() != EndpointType::Bulk || ep.direction() != Direction::In {
                 return None;
             }
 

@@ -6,7 +6,7 @@ use std::{io::Cursor, time};
 
 use cameleon_impl::bytes_io::ReadBytes;
 
-use crate::u3v::{Error, Result};
+use crate::u3v::{Result, U3vError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AckPacket<'a> {
@@ -62,7 +62,7 @@ impl<'a> AckPacket<'a> {
         if magic == Self::PREFIX_MAGIC {
             Ok(())
         } else {
-            Err(Error::InvalidPacket("invalid prefix magic".into()))
+            Err(U3vError::InvalidPacket("invalid prefix magic".into()))
         }
     }
 }
@@ -214,7 +214,7 @@ impl Status {
                 code,
                 kind: StatusKind::DeviceSpecific,
             }),
-            _ => Err(Error::InvalidPacket(
+            _ => Err(U3vError::InvalidPacket(
                 "invalid ack status code, namespace is set to 0b11".into(),
             )),
         }
@@ -242,7 +242,7 @@ impl Status {
             0x800F => WrongConfig,
             0x8FFF => GenericError,
             _ => {
-                return Err(Error::InvalidPacket(
+                return Err(U3vError::InvalidPacket(
                     format! {"invalid gencp status code {:#X}", code}.into(),
                 ))
             }
@@ -269,7 +269,7 @@ impl Status {
             0xA004 => InvalidSiState,
             0xA005 => EventEndpointHalted,
             _ => {
-                return Err(Error::InvalidPacket(
+                return Err(U3vError::InvalidPacket(
                     format! {"invalid usb status code {:#X}", code}.into(),
                 ))
             }
@@ -300,7 +300,7 @@ impl ScdKind {
             0x0805 => Ok(ScdKind::Pending),
             0x0807 => Ok(ScdKind::ReadMemStacked),
             0x0809 => Ok(ScdKind::WriteMemStacked),
-            _ => Err(Error::InvalidPacket(
+            _ => Err(U3vError::InvalidPacket(
                 format!("unknown ack command id {:#X}", id).into(),
             )),
         }
@@ -339,7 +339,7 @@ impl<'a> ParseScd<'a> for ReadMem<'a> {
     fn parse(buf: &'a [u8], ccd: &AckCcd) -> Result<Self> {
         let scd_len = ccd.scd_len() as usize;
         if buf.len() < scd_len {
-            return Err(Error::InvalidPacket(
+            return Err(U3vError::InvalidPacket(
                 "SCD length is smaller than specified length in CCD".into(),
             ));
         }
@@ -353,7 +353,7 @@ impl<'a> ParseScd<'a> for WriteMem {
         let mut cursor = Cursor::new(buf);
         let reserved: u16 = cursor.read_bytes_le()?;
         if reserved != 0 {
-            return Err(Error::InvalidPacket(
+            return Err(U3vError::InvalidPacket(
                 "the first two bytes of WriteMemAck scd must be set to zero".into(),
             ));
         }
@@ -368,7 +368,7 @@ impl<'a> ParseScd<'a> for Pending {
         let mut cursor = Cursor::new(buf);
         let reserved: u16 = cursor.read_bytes_le()?;
         if reserved != 0 {
-            return Err(Error::InvalidPacket(
+            return Err(U3vError::InvalidPacket(
                 "the first two bytes of PendingAck scd must be set to zero".into(),
             ));
         }
@@ -383,7 +383,7 @@ impl<'a> ParseScd<'a> for ReadMemStacked<'a> {
     fn parse(buf: &'a [u8], ccd: &AckCcd) -> Result<Self> {
         let scd_len = ccd.scd_len() as usize;
         if buf.len() < scd_len {
-            return Err(Error::InvalidPacket(
+            return Err(U3vError::InvalidPacket(
                 "SCD length is smaller than specified length in CCD".into(),
             ));
         }
@@ -401,7 +401,7 @@ impl<'a> ParseScd<'a> for WriteMemStacked {
         while to_read > 0 {
             let reserved: u16 = cursor.read_bytes_le()?;
             if reserved != 0 {
-                return Err(Error::InvalidPacket(
+                return Err(U3vError::InvalidPacket(
                     "the first two bytes of each WriteMemStackedAck SCD must be set to zero".into(),
                 ));
             }

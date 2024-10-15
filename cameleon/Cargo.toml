@@ -2,7 +2,7 @@
 name = "cameleon"
 version = "0.1.13"
 authors = ["Cameleon Project Developers"]
-edition = "2018"
+edition = "2021"
 license = "MPL-2.0"
 readme = "README.md"
 homepage = "https://github.com/cameleon-rs/cameleon/tree/main/cameleon"
@@ -20,7 +20,7 @@ thiserror = "1.0.24"
 semver = "1.0.0"
 zip = { version = "0.6.0", default-features = false, features = ["deflate"] }
 sha-1 = "0.10.0"
-async-channel = "1.7.0" # 1.7.0 has added recv_blocking()
+async-channel = "1.7.0"                                                       # 1.7.0 has added recv_blocking()
 tracing = "0.1.26"
 auto_impl = "1.0.1"
 cameleon-device = { path = "../device", version = "0.1.13" }
@@ -30,33 +30,25 @@ anyhow = "1.0.40"
 [dev-dependencies]
 trybuild = "1.0.42"
 
-[features]
-libusb = ["cameleon-device/libusb"]
-
 [[example]]
 name = "u3v_register_map"
 path = "examples/u3v/register_map.rs"
-required-features = ["libusb"]
 
 [[example]]
 name = "stream"
 path = "examples/stream.rs"
-required-features = ["libusb"]
 
 [[example]]
 name = "params"
 path = "examples/params.rs"
-required-features = ["libusb"]
 
 [[example]]
 name = "no_cache"
 path = "examples/no_cache.rs"
-required-features = ["libusb"]
 
 [[example]]
 name = "custom_ctxt"
 path = "examples/custom_ctxt.rs"
-required-features = ["libusb"]
 
 [package.metadata.docs.rs]
 all-features = true

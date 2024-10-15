@@ -12,7 +12,7 @@ use std::{
 use cameleon_impl::bytes_io::ReadBytes;
 
 use crate::{
-    u3v::{Error, Result},
+    u3v::{Result, U3vError},
     PixelFormat,
 };
 
@@ -135,7 +135,7 @@ impl<'a> Leader<'a> {
         if magic == Self::LEADER_MAGIC {
             Ok(())
         } else {
-            Err(Error::InvalidPacket("invalid prefix magic".into()))
+            Err(U3vError::InvalidPacket("invalid prefix magic".into()))
         }
     }
 }
@@ -227,7 +227,7 @@ impl SpecificLeader for ImageLeader {
         let pixel_format = cursor
             .read_bytes_le::<u32>()?
             .try_into()
-            .map_err(|e: String| Error::InvalidPacket(e.into()))?;
+            .map_err(|e: String| U3vError::InvalidPacket(e.into()))?;
         let width = cursor.read_bytes_le()?;
         let height = cursor.read_bytes_le()?;
         let x_offset = cursor.read_bytes_le()?;
@@ -315,7 +315,7 @@ impl SpecificLeader for ImageExtendedChunkLeader {
         let pixel_format = cursor
             .read_bytes_le::<u32>()?
             .try_into()
-            .map_err(|e: String| Error::InvalidPacket(e.into()))?;
+            .map_err(|e: String| U3vError::InvalidPacket(e.into()))?;
         let width = cursor.read_bytes_le()?;
         let height = cursor.read_bytes_le()?;
         let x_offset = cursor.read_bytes_le()?;
@@ -336,14 +336,14 @@ impl SpecificLeader for ImageExtendedChunkLeader {
 }
 
 impl TryFrom<u16> for PayloadType {
-    type Error = Error;
+    type Error = U3vError;
 
     fn try_from(val: u16) -> Result<Self> {
         match val {
             0x0001 => Ok(PayloadType::Image),
             0x4001 => Ok(PayloadType::ImageExtendedChunk),
             0x4000 => Ok(PayloadType::Chunk),
-            val => Err(Error::InvalidPacket(
+            val => Err(U3vError::InvalidPacket(
                 format!("invalid value for leader payload type: {}", val).into(),
             )),
         }
@@ -448,7 +448,7 @@ impl<'a> Trailer<'a> {
         if magic == Self::TRAILER_MAGIC {
             Ok(())
         } else {
-            Err(Error::InvalidPacket("invalid prefix magic".into()))
+            Err(U3vError::InvalidPacket("invalid prefix magic".into()))
         }
     }
 }
@@ -565,14 +565,14 @@ pub enum PayloadStatus {
 }
 
 impl TryFrom<u16> for PayloadStatus {
-    type Error = Error;
+    type Error = U3vError;
 
     fn try_from(val: u16) -> Result<Self> {
         match val {
             0x0000 => Ok(PayloadStatus::Success),
             0xA100 => Ok(PayloadStatus::DataDiscarded),
             0xA101 => Ok(PayloadStatus::DataOverrun),
-            otherwise => Err(Error::InvalidPacket(
+            otherwise => Err(U3vError::InvalidPacket(
                 format!("{} is invalid value for stream payload status", otherwise,).into(),
             )),
         }

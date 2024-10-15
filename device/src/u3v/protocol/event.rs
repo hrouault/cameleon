@@ -6,7 +6,7 @@ use std::io::{self, Cursor};
 
 use cameleon_impl::bytes_io::ReadBytes;
 
-use crate::u3v::{Error, Result};
+use crate::u3v::{Result, U3vError};
 
 pub struct EventPacket<'a> {
     ccd: EventCcd,
@@ -38,7 +38,7 @@ impl<'a> EventPacket<'a> {
         if magic == Self::PREFIX_MAGIC {
             Ok(())
         } else {
-            Err(Error::InvalidPacket("invalid event prefix magic".into()))
+            Err(U3vError::InvalidPacket("invalid event prefix magic".into()))
         }
     }
 }
@@ -59,7 +59,7 @@ impl EventCcd {
         let flag = cursor.read_bytes_le()?;
         let command_id = cursor.read_bytes_le()?;
         if command_id != Self::EVENT_COMMAND_ID {
-            return Err(Error::InvalidPacket("invalid event command id".into()));
+            return Err(U3vError::InvalidPacket("invalid event command id".into()));
         }
         let scd_len = cursor.read_bytes_le()?;
         let request_id = cursor.read_bytes_le()?;
@@ -113,17 +113,17 @@ impl<'a> EventScd<'a> {
             // MultiEvent isn't enabled.
             let data = if event_size == 0 {
                 remained = remained.checked_sub(12).ok_or_else(|| {
-                    Error::InvalidPacket("SCD length in CCD is inconsistent with SCD".into())
+                    U3vError::InvalidPacket("SCD length in CCD is inconsistent with SCD".into())
                 })?;
                 let data = read_and_seek(cursor, remained)?;
                 remained = 0;
                 data
             } else {
                 let data_len = event_size.checked_sub(12).ok_or_else(|| {
-                    Error::InvalidPacket("event size is smaller than scd header".into())
+                    U3vError::InvalidPacket("event size is smaller than scd header".into())
                 })?;
                 remained = remained.checked_sub(event_size).ok_or_else(|| {
-                    Error::InvalidPacket("SCD length in CCD is inconsistent with SCD".into())
+                    U3vError::InvalidPacket("SCD length in CCD is inconsistent with SCD".into())
                 })?;
                 read_and_seek(cursor, data_len)?
             };

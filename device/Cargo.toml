@@ -1,14 +1,15 @@
 [package]
 name = "cameleon-device"
 version = "0.1.13"
-edition = "2018"
+edition = "2021"
 authors = ["Cameleon Project Developers"]
 license = "MPL-2.0"
 readme = "README.md"
 homepage = "https://github.com/cameleon-rs/cameleon/tree/main/device"
 repository = "https://github.com/cameleon-rs/cameleon"
 description = """
-cameleon-device provides device specific protocol decoders and basic I/O operations for GenICam compatible devices.
+cameleon-device provides device specific protocol decoders and basic I/O
+operations for GenICam compatible devices.
 """
 categories = ["computer-vision"]
 keywords = ["genicam", "camera", "usb3", "gige", "uvc"]
@@ -19,26 +20,19 @@ log = "0.4.14"
 semver = "1.0.0"
 cfg-if = "1.0.0"
 cameleon-impl = { path = "../impl", version = "0.1.13" }
-
-rusb = { version = "0.9.0", optional = true }
-libusb1-sys = { version = "0.7.0", optional = true }
-libc = { version = "0.2", optional = true }
+nusb = "0.1.10"
+futures-lite = "2.3.0"
 
 [dev-dependencies]
 trybuild = "1.0.42"
 
-[features]
-libusb = ["rusb", "libusb1-sys", "libc"]
-
 [[example]]
 name = "u3v_device_enumeration"
 path = "examples/u3v/device_enumeration.rs"
-required-features = ["libusb"]
 
 [[example]]
 name = "u3v_device_control"
 path = "examples/u3v/device_control.rs"
-required-features = ["libusb"]
 
 [package.metadata.docs.rs]
 all-features = true
