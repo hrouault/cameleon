@@ -2,132 +2,115 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use crate::u3v::Result;
+use futures_lite::future::block_on;
+use nusb::{
+    transfer::{ControlOut, ControlType, Recipient},
+    Interface,
+};
 use std::time;
 
-use crate::u3v::Result;
-
-use super::device::LibUsbDeviceHandle;
-
 pub struct ControlChannel {
-    pub(super) device_handle: LibUsbDeviceHandle,
+    pub(super) device: nusb::Device,
     pub iface_info: ControlIfaceInfo,
-    pub is_opened: bool,
+    pub iface: Option<Interface>,
 }
 
 impl ControlChannel {
     pub fn open(&mut self) -> Result<()> {
-        if !self.is_opened() {
-            self.device_handle
-                .claim_interface(self.iface_info.iface_number)?;
-            self.is_opened = true;
+        if self.iface.is_none() {
+            self.device.claim_interface(self.iface_info.iface_number)?;
         }
 
         Ok(())
     }
-
-    pub fn close(&mut self) -> Result<()> {
-        if self.is_opened() {
-            self.device_handle
-                .release_interface(self.iface_info.iface_number)?;
-            self.is_opened = false;
-        }
-
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn is_opened(&self) -> bool {
-        self.is_opened
-    }
-
-    pub fn send(&self, buf: &[u8], timeout: time::Duration) -> Result<usize> {
-        Ok(self
-            .device_handle
-            .write_bulk(self.iface_info.bulk_out_ep, buf, timeout)?)
-    }
-
-    pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
-        Ok(self
-            .device_handle
-            .read_bulk(self.iface_info.bulk_in_ep, buf, timeout)?)
-    }
-
-    pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
-        set_halt(&self.device_handle, self.iface_info.bulk_in_ep, timeout)?;
-        set_halt(&self.device_handle, self.iface_info.bulk_out_ep, timeout)?;
-
-        Ok(())
-    }
-
-    pub fn clear_halt(&mut self) -> Result<()> {
-        self.device_handle.clear_halt(self.iface_info.bulk_in_ep)?;
-        self.device_handle.clear_halt(self.iface_info.bulk_out_ep)?;
-        Ok(())
-    }
-
-    pub(super) fn new(device_handle: LibUsbDeviceHandle, iface_info: ControlIfaceInfo) -> Self {
+    //
+    //     pub fn send(&self, buf: &[u8], timeout: time::Duration) -> Result<usize> {
+    //         Ok(self
+    //             .iface
+    //             .bulk_out(self.iface_info.bulk_out_ep, buf, timeout)?)
+    //     }
+    //
+    //     pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
+    //         Ok(self
+    //             .iface
+    //             .bulk_in(self.iface_info.bulk_in_ep, buf, timeout)?)
+    //     }
+    //
+    //     pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
+    //         set_halt(&self.device_handle, self.iface_info.bulk_in_ep, timeout)?;
+    //         set_halt(&self.device_handle, self.iface_info.bulk_out_ep, timeout)?;
+    //
+    //         Ok(())
+    //     }
+    //
+    //     pub fn clear_halt(&mut self) -> Result<()> {
+    //         self.device_handle.clear_halt(self.iface_info.bulk_in_ep)?;
+    //         self.device_handle.clear_halt(self.iface_info.bulk_out_ep)?;
+    //         Ok(())
+    //     }
+    //
+    pub(super) fn new(device: nusb::Device, iface_info: ControlIfaceInfo) -> Self {
         Self {
-            device_handle,
+            device,
             iface_info,
-            is_opened: false,
+            iface: None,
         }
     }
 }
-
+//
 pub struct ReceiveChannel {
-    pub(super) device_handle: LibUsbDeviceHandle,
+    pub(super) device: nusb::Device,
     pub iface_info: ReceiveIfaceInfo,
-    pub is_opened: bool,
+    pub iface: Option<Interface>,
 }
 
 impl ReceiveChannel {
     pub fn open(&mut self) -> Result<()> {
-        if !self.is_opened() {
-            self.device_handle
-                .claim_interface(self.iface_info.iface_number)?;
-            self.is_opened = true;
+        if self.iface.is_none() {
+            self.device.claim_interface(self.iface_info.iface_number)?;
         }
 
         Ok(())
     }
-
-    pub fn close(&mut self) -> Result<()> {
-        if self.is_opened() {
-            self.device_handle
-                .release_interface(self.iface_info.iface_number)?;
-        }
-
-        self.is_opened = false;
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn is_opened(&self) -> bool {
-        self.is_opened
-    }
-
-    pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
-        Ok(self
-            .device_handle
-            .read_bulk(self.iface_info.bulk_in_ep, buf, timeout)?)
-    }
-
-    pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
-        set_halt(&self.device_handle, self.iface_info.bulk_in_ep, timeout)?;
-
-        Ok(())
-    }
-
-    pub fn clear_halt(&mut self) -> Result<()> {
-        self.device_handle.clear_halt(self.iface_info.bulk_in_ep)?;
-        Ok(())
-    }
-
-    pub(super) fn new(device_handle: LibUsbDeviceHandle, iface_info: ReceiveIfaceInfo) -> Self {
+    //
+    //     pub fn close(&mut self) -> Result<()> {
+    //         if self.is_opened() {
+    //             self.device_handle
+    //                 .release_interface(self.iface_info.iface_number)?;
+    //         }
+    //
+    //         self.is_opened = false;
+    //         Ok(())
+    //     }
+    //
+    //     #[must_use]
+    //     pub fn is_opened(&self) -> bool {
+    //         self.is_opened
+    //     }
+    //
+    //     pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
+    //         Ok(self
+    //             .device_handle
+    //             .read_bulk(self.iface_info.bulk_in_ep, buf, timeout)?)
+    //     }
+    //
+    //     pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
+    //         set_halt(&self.device_handle, self.iface_info.bulk_in_ep, timeout)?;
+    //
+    //         Ok(())
+    //     }
+    //
+    //     pub fn clear_halt(&mut self) -> Result<()> {
+    //         self.device_handle.clear_halt(self.iface_info.bulk_in_ep)?;
+    //         Ok(())
+    //     }
+    //
+    pub(super) fn new(device: nusb::Device, iface_info: ReceiveIfaceInfo) -> Self {
         Self {
-            device_handle,
+            device,
             iface_info,
-            is_opened: false,
+            iface: None,
         }
     }
 }
@@ -145,28 +128,20 @@ pub struct ReceiveIfaceInfo {
     pub bulk_in_ep: u8,
 }
 
-fn set_halt(
-    handle: &LibUsbDeviceHandle,
-    endpoint_number: u8,
-    timeout: time::Duration,
-) -> Result<()> {
-    let request_type = rusb::request_type(
-        rusb::Direction::Out,
-        rusb::RequestType::Standard,
-        rusb::Recipient::Endpoint,
-    );
-    let request = 0x03; // SET_FEATURE.
-    let value = 0x00; // ENDPOINT_HALT.
-    let buf = vec![]; // NO DATA.
-
-    handle.write_control(
-        request_type,
-        request,
-        value,
-        u16::from(endpoint_number),
-        &buf,
-        timeout,
-    )?;
-
-    Ok(())
-}
+// fn set_halt(handle: &nusb::Device, endpoint_number: u8, timeout: time::Duration) -> Result<()> {
+//     let request = 0x03; // SET_FEATURE.
+//     let value = 0x00; // ENDPOINT_HALT.
+//     let buf = vec![]; // NO DATA.
+//
+//     let interface = handle.claim_interface(0).unwrap();
+//     let result = block_on(interface.control_out(ControlOut {
+//         control_type: ControlType::Vendor,
+//         recipient: Recipient::Endpoint,
+//         request,
+//         value,
+//         index: endpoint_number as u16,
+//         data: &buf,
+//     }))?;
+//
+//     Ok(())
+// }
