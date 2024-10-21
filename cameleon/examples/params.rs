@@ -6,6 +6,10 @@
 use cameleon::u3v;
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
     let mut cameras = u3v::enumerate_cameras().unwrap();
     if cameras.is_empty() {
         println!("no camera found!");

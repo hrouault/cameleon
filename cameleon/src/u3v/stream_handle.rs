@@ -4,19 +4,18 @@
 
 //! This module contains low level streaming implementation for `U3V` device.
 
-use std::{
-    convert::TryInto,
-    sync::mpsc,
-    sync::{mpsc::TryRecvError, Arc, Mutex},
-    time::Duration,
-};
+use crate::camera::PayloadStream;
+use nusb::transfer::{Queue, RequestBuffer};
+use std::{sync::mpsc, time::Duration};
 
-use cameleon_device::u3v::{self, async_read::AsyncPool, protocol::stream as u3v_stream};
-use tracing::{error, info, warn};
+use cameleon_device::u3v::{
+    self,
+    protocol::stream::{self as u3v_stream, Leader, Trailer},
+};
+use tracing::{error, info};
 
 use crate::{
-    camera::PayloadStream,
-    payload::{ImageInfo, Payload, PayloadSender, PayloadType},
+    payload::{ImageInfo, Payload, PayloadType},
     ControlError, ControlResult, DeviceControl, StreamError, StreamResult,
 };
 
@@ -25,29 +24,38 @@ use super::register_map::Abrm;
 /// This type is used to receive stream packets from the device.
 pub struct StreamHandle {
     /// Inner channel to receive payload data.
-    pub inner: Arc<Mutex<u3v::ReceiveChannel>>,
+    pub stream_channel: u3v::ReceiveChannel,
     /// Parameters for streaming.
     params: StreamParams,
     cancellation_tx: Option<mpsc::SyncSender<()>>,
-}
 
-macro_rules! unwrap_or_poisoned {
-    ($res:expr) => {{
-        $res.map_err(|cause| {
-            let err = StreamError::Poisoned(cause.to_string().into());
-            error!(?err);
-            err
-        })
-    }};
+    leader_buf: Option<Vec<u8>>,
+    trailer_buf: Option<Vec<u8>>,
+    final1_buf: Option<Vec<u8>>,
+    final2_buf: Option<Vec<u8>>,
+    payload_bufs: Vec<Vec<u8>>,
+    pic_buf: Option<Vec<u8>>,
 }
 
 impl StreamHandle {
     pub(super) fn new(device: &u3v::Device) -> ControlResult<Option<Self>> {
-        let inner = device.stream_channel()?;
-        Ok(inner.map(|inner| Self {
-            inner: Arc::new(Mutex::new(inner)),
+        info!("get stream channel");
+        let channel = device.stream_channel()?;
+        if channel.is_none() {
+            info!("channel is none");
+        }
+
+        Ok(channel.map(|channel| Self {
+            stream_channel: channel,
             params: StreamParams::default(),
             cancellation_tx: None,
+
+            leader_buf: None,
+            trailer_buf: None,
+            final1_buf: None,
+            final2_buf: None,
+            payload_bufs: Vec::<Vec<u8>>::default(),
+            pic_buf: None,
         }))
     }
 
@@ -61,11 +69,111 @@ impl StreamHandle {
     pub fn params_mut(&mut self) -> &mut StreamParams {
         &mut self.params
     }
+
+    fn submit_leader(&mut self, queue: &mut Queue<RequestBuffer>) -> StreamResult<()> {
+        let req_buf = if let Some(buf) = self.leader_buf.take() {
+            RequestBuffer::reuse(buf, self.params.leader_size)
+        } else {
+            RequestBuffer::new(self.params.leader_size)
+        };
+        queue.submit(req_buf);
+
+        Ok(())
+    }
+
+    fn submit_payload(&mut self, queue: &mut Queue<RequestBuffer>) -> StreamResult<()> {
+        let payload_size = self.params.payload_size;
+        for _ in 0..self.params.payload_count {
+            let req_buf = if let Some(buf) = self.payload_bufs.pop() {
+                RequestBuffer::reuse(buf, payload_size)
+            } else {
+                RequestBuffer::new(payload_size)
+            };
+            queue.submit(req_buf);
+        }
+
+        if self.params.payload_final1_size != 0 {
+            let req_buf = if let Some(buf) = self.final1_buf.take() {
+                RequestBuffer::reuse(buf, self.params.payload_final1_size)
+            } else {
+                RequestBuffer::new(self.params.payload_final1_size)
+            };
+            queue.submit(req_buf);
+        }
+        if self.params.payload_final2_size != 0 {
+            let req_buf = if let Some(buf) = self.final2_buf.take() {
+                RequestBuffer::reuse(buf, self.params.payload_final2_size)
+            } else {
+                RequestBuffer::new(self.params.payload_final2_size)
+            };
+            queue.submit(req_buf);
+        }
+
+        Ok(())
+    }
+
+    fn submit_trailer(&mut self, queue: &mut Queue<RequestBuffer>) -> StreamResult<()> {
+        let req_buf = if let Some(buf) = self.trailer_buf.take() {
+            RequestBuffer::reuse(buf, self.params.trailer_size)
+        } else {
+            RequestBuffer::new(self.params.trailer_size)
+        };
+        queue.submit(req_buf);
+
+        Ok(())
+    }
+
+    async fn read_leader(&mut self, queue: &mut Queue<RequestBuffer>) -> StreamResult<()> {
+        let leader_buf = queue.next_complete().await.into_result()?;
+        self.leader_buf = Some(leader_buf);
+        Ok(())
+    }
+
+    fn parse_leader(&self) -> StreamResult<Leader> {
+        match &self.leader_buf {
+            Some(buf) => Ok(u3v_stream::Leader::parse(&buf[..])?),
+            None => Err(StreamError::NoBuffer),
+        }
+    }
+
+    async fn read_payload(&mut self, queue: &mut Queue<RequestBuffer>) -> StreamResult<()> {
+        let maximum_payload_size = self.params.maximum_payload_size();
+        let mut pic_buf = match self.pic_buf.take() {
+            Some(mut buf) => {
+                if buf.len() != maximum_payload_size {
+                    buf.resize(maximum_payload_size, 0);
+                }
+                buf
+            }
+            None => vec![0; maximum_payload_size],
+        };
+
+        for i in 0..self.params.payload_count {
+            let payload_size = self.params.payload_size;
+            let completion = queue.next_complete().await.into_result()?;
+            pic_buf[i * payload_size..(i + 1) * payload_size].clone_from_slice(&completion);
+            self.payload_bufs.push(completion);
+        }
+        Ok(())
+    }
+
+    async fn read_trailer(&mut self, queue: &mut Queue<RequestBuffer>) -> StreamResult<()> {
+        let trailer_buf = queue.next_complete().await.into_result()?;
+        self.trailer_buf = Some(trailer_buf);
+        Ok(())
+    }
+
+    fn parse_trailer(&self) -> StreamResult<Trailer> {
+        match &self.trailer_buf {
+            Some(buf) => Ok(u3v_stream::Trailer::parse(&buf[..])?),
+            None => Err(StreamError::NoBuffer),
+        }
+    }
 }
 
 impl PayloadStream for StreamHandle {
     fn open(&mut self) -> StreamResult<()> {
-        unwrap_or_poisoned!(self.inner.lock())?.open().map_err(|e| {
+        self.stream_channel.open().map_err(|e| {
             error!(?e);
             e.into()
         })
@@ -73,21 +181,12 @@ impl PayloadStream for StreamHandle {
 
     fn close(&mut self) -> StreamResult<()> {
         if self.is_loop_running() {
-            self.stop_streaming_loop()?;
+            self.stop_streaming()?;
         }
-        unwrap_or_poisoned!(self.inner.lock())?
-            .close()
-            .map_err(|e| {
-                error!(?e);
-                e.into()
-            })
+        Ok(())
     }
 
-    fn start_streaming_loop(
-        &mut self,
-        sender: PayloadSender,
-        ctrl: &mut dyn DeviceControl,
-    ) -> StreamResult<()> {
+    fn start_streaming(&mut self, ctrl: &mut dyn DeviceControl) -> StreamResult<()> {
         self.params = StreamParams::from_control(ctrl).map_err(|e| {
             StreamError::Io(anyhow::Error::msg(format!(
                 "failed to setup streaming parameters: {}",
@@ -97,27 +196,44 @@ impl PayloadStream for StreamHandle {
 
         if self.is_loop_running() {
             return Err(StreamError::InStreaming);
-        }
-
-        // Sync channel of capacity 0 is a special rendez-vous mode, where every send() blocks.
-        let (cancellation_tx, cancellation_rx) = mpsc::sync_channel(0);
-        self.cancellation_tx = Some(cancellation_tx);
-
-        let strm_loop = StreamingLoop {
-            inner: self.inner.clone(),
-            params: self.params.clone(),
-            sender,
-            cancellation_rx,
         };
-        std::thread::spawn(|| {
-            strm_loop.run();
-        });
-
-        info!("start streaming loop successfully");
         Ok(())
     }
 
-    fn stop_streaming_loop(&mut self) -> StreamResult<()> {
+    async fn next_payload(&mut self) -> Result<Payload, StreamError> {
+        let mut queue = {
+            let channel = &self.stream_channel;
+            let iface = channel.iface.as_ref().unwrap();
+
+            iface.bulk_in_queue(channel.iface_info.bulk_in_ep)
+        };
+
+        // read leader
+        self.submit_leader(&mut queue)?;
+        self.submit_payload(&mut queue)?;
+        self.submit_trailer(&mut queue)?;
+
+        // We've submitted the bulk transfers, now wait for them and parse the results
+        // parse the leader
+        self.read_leader(&mut queue).await?;
+        self.read_payload(&mut queue).await?;
+        self.read_trailer(&mut queue).await?;
+        let pic_buf = self.pic_buf.take().ok_or_else(|| StreamError::NoBuffer)?;
+
+        let leader = self.parse_leader()?;
+        let trailer = self.parse_trailer()?;
+
+        let read_payload_size = pic_buf.len();
+        PayloadBuilder {
+            leader,
+            payload_buf: pic_buf,
+            read_payload_size,
+            trailer,
+        }
+        .build()
+    }
+
+    fn stop_streaming(&mut self) -> StreamResult<()> {
         if self.is_loop_running() {
             let cancellation_tx = self.cancellation_tx.take().unwrap();
             // Since `cancellation` channel has a capacity of 0, this blocks until the streaming
@@ -133,168 +249,6 @@ impl PayloadStream for StreamHandle {
 
     fn is_loop_running(&self) -> bool {
         self.cancellation_tx.is_some()
-    }
-}
-
-impl Drop for StreamHandle {
-    fn drop(&mut self) {
-        if let Err(e) = self.close() {
-            error!(?e)
-        }
-    }
-}
-
-impl From<StreamHandle> for Box<dyn PayloadStream> {
-    fn from(strm: StreamHandle) -> Self {
-        Box::new(strm)
-    }
-}
-
-struct StreamingLoop {
-    inner: Arc<Mutex<u3v::ReceiveChannel>>,
-    params: StreamParams,
-    sender: PayloadSender,
-    cancellation_rx: mpsc::Receiver<()>,
-}
-
-impl StreamingLoop {
-    fn run(self) {
-        let mut trailer_buf = vec![0; self.params.trailer_size];
-        let mut payload_buf_opt = None;
-        let mut leader_buf = vec![0; self.params.leader_size];
-        let inner = self.inner.lock().unwrap();
-
-        'outer: loop {
-            // Stop the loop when
-            // 1. `cancellation_tx` sends signal.
-            // 2. `cancellation_tx` is dropped.
-            match self.cancellation_rx.try_recv() {
-                Ok(()) | Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {}
-            }
-
-            let maximum_payload_size = self.params.maximum_payload_size();
-            let mut payload_buf = match payload_buf_opt.take() {
-                Some(payload_buf) => payload_buf,
-                None => match self.sender.try_recv() {
-                    Ok(mut payload) => {
-                        if payload.payload.len() != maximum_payload_size {
-                            payload.payload.resize(maximum_payload_size, 0);
-                        }
-                        payload.payload
-                    }
-                    Err(_) => {
-                        vec![0; maximum_payload_size]
-                    }
-                },
-            };
-
-            let mut async_pool = AsyncPool::new(&inner);
-
-            if let Err(err) = read_leader(&mut async_pool, &self.params, &mut leader_buf) {
-                // Report and send error if the error is fatal.
-                if matches!(err, StreamError::Io(..) | StreamError::Disconnected) {
-                    error!(?err);
-                    self.sender.try_send(Err(err)).ok();
-                }
-                payload_buf_opt = Some(payload_buf);
-                continue;
-            };
-
-            if let Err(err) = read_payload(&mut async_pool, &self.params, &mut payload_buf) {
-                warn!(?err);
-                // Reuse `payload_buf`.
-                payload_buf_opt = Some(payload_buf);
-                self.sender.try_send(Err(err)).ok();
-                continue;
-            };
-
-            if let Err(err) = read_trailer(&mut async_pool, &self.params, &mut trailer_buf) {
-                warn!(?err);
-                // Reuse `payload_buf`.
-                payload_buf_opt = Some(payload_buf);
-                self.sender.try_send(Err(err)).ok();
-                continue;
-            };
-
-            // We've submitted the bulk transfers, now wait for them.
-            let mut first_buf_len = None;
-            let mut last_buf_len = None;
-            let mut payload_len = 0;
-
-            while !async_pool.is_empty() {
-                let len = match async_pool.poll(self.params.timeout) {
-                    Ok(len) => len,
-                    Err(err) => {
-                        warn!(?err);
-                        // Can't reuse `payload_buf` because we're in a loop.
-                        self.sender.try_send(Err(err.into())).ok();
-                        continue 'outer;
-                    }
-                };
-
-                if first_buf_len.is_none() {
-                    first_buf_len = Some(len);
-                } else {
-                    payload_len += len;
-                }
-
-                last_buf_len = Some(len);
-            }
-
-            let payload_len = payload_len - last_buf_len.unwrap();
-
-            // We received the data from the bulk transfers, try to parse stuff now.
-            let leader = match u3v_stream::Leader::parse(&leader_buf)
-                .map_err(|e| StreamError::InvalidPayload(format!("{}", e).into()))
-            {
-                Ok(leader) => leader,
-                Err(err) => {
-                    warn!(?err);
-                    // Reuse `payload_buf`.
-                    payload_buf_opt = Some(payload_buf);
-                    self.sender.try_send(Err(err)).ok();
-                    continue;
-                }
-            };
-
-            let trailer = match u3v_stream::Trailer::parse(&trailer_buf)
-                .map_err(|e| StreamError::InvalidPayload(format!("invalid trailer: {}", e).into()))
-            {
-                Ok(trailer) => trailer,
-                Err(err) => {
-                    warn!(?err);
-                    // Reuse `payload_buf`.
-                    payload_buf_opt = Some(payload_buf);
-                    self.sender.try_send(Err(err)).ok();
-                    continue;
-                }
-            };
-
-            let builder_result = PayloadBuilder {
-                leader,
-                payload_buf,
-                read_payload_size: payload_len,
-                trailer,
-            }
-            .build();
-
-            let payload = match builder_result {
-                Ok(payload) => payload,
-                Err(e) => {
-                    warn!(?e);
-                    // Can't reuse `payload_buf` because we moved it
-                    // into PayloadBuilder above.
-                    payload_buf_opt = None;
-                    self.sender.try_send(Err(e)).ok();
-                    continue;
-                }
-            };
-
-            if let Err(err) = self.sender.try_send(Ok(payload)) {
-                warn!(?err);
-            }
-        }
     }
 }
 
@@ -523,49 +477,4 @@ impl StreamParams {
             timeout,
         ))
     }
-}
-
-fn read_leader(
-    async_pool: &mut AsyncPool,
-    params: &StreamParams,
-    buf: &mut [u8],
-) -> StreamResult<()> {
-    let leader_size = params.leader_size;
-    async_pool.submit(&mut buf[..leader_size])?;
-
-    Ok(())
-}
-
-fn read_payload(
-    async_pool: &mut AsyncPool,
-    params: &StreamParams,
-    buf: &mut [u8],
-) -> StreamResult<()> {
-    let payload_size = params.payload_size;
-    let mut cursor = 0;
-    for _ in 0..params.payload_count {
-        async_pool.submit(&mut buf[cursor..cursor + payload_size])?;
-        cursor += payload_size;
-    }
-
-    if params.payload_final1_size != 0 {
-        async_pool.submit(&mut buf[cursor..cursor + params.payload_final1_size])?;
-        cursor += params.payload_final1_size;
-    }
-    if params.payload_final2_size != 0 {
-        async_pool.submit(&mut buf[cursor..cursor + params.payload_final2_size])?;
-    }
-
-    Ok(())
-}
-
-fn read_trailer(
-    async_pool: &mut AsyncPool,
-    params: &StreamParams,
-    buf: &mut [u8],
-) -> StreamResult<()> {
-    let trailer_size = params.trailer_size;
-    async_pool.submit(&mut buf[..trailer_size])?;
-
-    Ok(())
 }

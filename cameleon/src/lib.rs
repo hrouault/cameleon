@@ -146,9 +146,9 @@
 pub mod camera;
 pub mod genapi;
 pub mod payload;
-#[cfg(feature = "libusb")]
 pub mod u3v;
 
+use cameleon_device::u3v::U3vError;
 pub use camera::{Camera, CameraInfo, DeviceControl, PayloadStream};
 
 use std::{borrow::Cow, num::TryFromIntError};
@@ -166,6 +166,10 @@ pub enum CameleonError {
     /// An error from payload stream.
     #[error("stream error: {0}")]
     StreamError(#[from] StreamError),
+
+    /// An error from the U3v device interface.
+    #[error("U3v device  error: {0}")]
+    U3vError(#[from] U3vError),
 
     /// `GenApi` context is not laoded yet.
     #[error("`GenApi` context is missing")]
@@ -196,7 +200,11 @@ pub enum ControlError {
 
     /// IO error.
     #[error("input/output error: {0}")]
-    Io(anyhow::Error),
+    Io(String),
+
+    /// USB3 error
+    #[error("input/output error: {0}")]
+    U3Error(#[from] U3vError),
 
     /// Timeout has occured when receiving stream payload.
     #[error("timeout has occured when receiving stream payload")]
@@ -226,6 +234,22 @@ pub type StreamResult<T> = std::result::Result<T, StreamError>;
 /// An error type related to payload streaming.
 #[derive(Debug, thiserror::Error)]
 pub enum StreamError {
+    /// The streaming was cancelled
+    #[error("nusb transfer cancelled")]
+    Cancelled,
+
+    /// Failed to receive [`payload::Payload`].
+    #[error("nusb transfer error: {0}")]
+    TransferError(#[from] nusb::transfer::TransferError),
+
+    /// Failed to parse the received data
+    #[error("failed to parse the input data: {0}")]
+    ParseError(#[from] U3vError),
+
+    /// Failed to parse the leader
+    #[error("failed to find the leader or the trailer")]
+    NoBuffer,
+
     /// Failed to receive [`payload::Payload`].
     #[error("failed to receive payload: {0}")]
     ReceiveError(Cow<'static, str>),
@@ -241,6 +265,10 @@ pub enum StreamError {
     /// The device is disconnected from the host.
     #[error("device is disconnected")]
     Disconnected,
+
+    /// The device is disconnected from the host.
+    #[error("The transfer channel is disconnected")]
+    TxRxDisconnected,
 
     /// IO error.
     #[error("can't communicate with the device: {0}")]

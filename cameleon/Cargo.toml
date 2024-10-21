@@ -26,9 +26,13 @@ auto_impl = "1.0.1"
 cameleon-device = { path = "../device", version = "0.1.13" }
 cameleon-genapi = { path = "../genapi", version = "0.1.13" }
 anyhow = "1.0.40"
+futures-lite = "2.3.0"
+nusb = "0.1.10"
+futures-core = "0.3.31"
 
 [dev-dependencies]
 trybuild = "1.0.42"
+tracing-subscriber = "0.3.18"
 
 [[example]]
 name = "u3v_register_map"

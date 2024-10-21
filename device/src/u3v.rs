@@ -31,6 +31,9 @@ pub enum U3vError {
     #[error("nusb error: {0}")]
     NUsb(#[from] nusb::Error),
 
+    #[error("No open interface found")]
+    NoInterface,
+
     #[error("packet is broken: {0}")]
     InvalidPacket(Cow<'static, str>),
 

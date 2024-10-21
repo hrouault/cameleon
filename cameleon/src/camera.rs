@@ -24,8 +24,8 @@
 //! // Loads `GenApi` context. This is necessary for streaming.
 //! camera.load_context().unwrap();
 //!
-//! // Start streaming. Channel capacity is set to 3.
-//! let payload_rx = camera.start_streaming(3).unwrap();
+//! // Start streaming.
+//! let payload_rx = camera.start_streaming().unwrap();
 //!
 //! let mut payload_count = 0;
 //! while payload_count < 10 {
@@ -62,7 +62,7 @@ use tracing::info;
 
 use super::{
     genapi::{DefaultGenApiCtxt, FromXml, GenApiCtxt, ParamsCtxt},
-    payload::{channel, PayloadReceiver, PayloadSender},
+    payload::Payload,
     CameleonError, CameleonResult, ControlResult, StreamError, StreamResult,
 };
 
@@ -85,8 +85,8 @@ use super::{
 /// // Loads `GenApi` context. This is necessary for streaming.
 /// camera.load_context().unwrap();
 ///
-/// // Start streaming. Channel capacity is set to 3.
-/// let payload_rx = camera.start_streaming(3).unwrap();
+/// // Start streaming.
+/// let payload_rx = camera.start_streaming().unwrap();
 ///
 /// let mut payload_count = 0;
 /// while payload_count < 10 {
@@ -169,7 +169,9 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         Strm: PayloadStream,
     {
         info!("try opening the device");
+        info!("Opening the control");
         self.ctrl.open()?;
+        info!("opening the stream");
         self.strm.open()?;
         info!("opened the device successfully");
         Ok(())
@@ -205,8 +207,6 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     {
         info!("try closing the device");
         self.stop_streaming()?;
-        self.ctrl.close()?;
-        self.strm.close()?;
         if let Some(ctxt) = &mut self.ctxt {
             ctxt.clear_cache()
         }
@@ -290,13 +290,12 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     #[tracing::instrument(skip(self),
                           level = "info",
                           fields(camera = ?self.info()))]
-    pub fn start_streaming(&mut self, cap: usize) -> CameleonResult<PayloadReceiver>
+    pub fn start_streaming(&mut self) -> CameleonResult<()>
     where
         Ctrl: DeviceControl,
         Strm: PayloadStream,
         Ctxt: GenApiCtxt,
     {
-        const DEFAULT_BUFFER_CAP: usize = 5;
         info!("try starting streaming");
 
         if self.strm.is_loop_running() {
@@ -309,12 +308,8 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         expect_node!(&ctxt, "TLParamsLocked", as_integer).set_value(&mut ctxt, 1)?;
         expect_node!(&ctxt, "AcquisitionStart", as_command).execute(&mut ctxt)?;
 
-        // Start streaming loop.
-        let (sender, receiver) = channel(cap, DEFAULT_BUFFER_CAP);
-        self.strm.start_streaming_loop(sender, &mut self.ctrl)?;
-
-        info!("start streaming successfully");
-        Ok(receiver)
+        self.strm.start_streaming(&mut self.ctrl)?;
+        Ok(())
     }
 
     /// Stops the streaming.
@@ -359,7 +354,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         }
 
         // Stop streaming loop.
-        self.strm.stop_streaming_loop()?;
+        self.strm.stop_streaming()?;
 
         // Disable streaming.
         let mut ctxt = self.params_ctxt()?;
@@ -531,9 +526,6 @@ pub trait DeviceControl {
     /// Opens the handle.
     fn open(&mut self) -> ControlResult<()>;
 
-    /// Closes the handle.
-    fn close(&mut self) -> ControlResult<()>;
-
     /// Returns `true` if device is already opened.
     fn is_opened(&self) -> bool;
 
@@ -556,7 +548,7 @@ pub trait DeviceControl {
 }
 
 /// This trait provides streaming capability.
-#[auto_impl(&mut, Box)]
+// #[auto_impl(&mut, Box)]
 pub trait PayloadStream {
     /// Opens the handle.
     fn open(&mut self) -> StreamResult<()>;
@@ -565,14 +557,13 @@ pub trait PayloadStream {
     fn close(&mut self) -> StreamResult<()>;
 
     /// Starts streaming.
-    fn start_streaming_loop(
-        &mut self,
-        sender: PayloadSender,
-        ctrl: &mut dyn DeviceControl,
-    ) -> StreamResult<()>;
+    fn start_streaming(&mut self, ctrl: &mut dyn DeviceControl) -> StreamResult<()>;
+
+    /// Get the next payload (asynchronous).
+    fn next_payload(&mut self) -> impl std::future::Future<Output = StreamResult<Payload>>;
 
     /// Stops streaming.
-    fn stop_streaming_loop(&mut self) -> StreamResult<()>;
+    fn stop_streaming(&mut self) -> StreamResult<()>;
 
     /// Returns `true` if streaming loop is running.
     fn is_loop_running(&self) -> bool;

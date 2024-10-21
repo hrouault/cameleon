@@ -52,6 +52,7 @@ use cameleon_device::u3v::{
     self,
     register_map::{abrm, manifest_entry, sbrm, sirm},
 };
+use tracing::info;
 
 use crate::{genapi::CompressionType, ControlError, ControlResult, DeviceControl};
 
@@ -110,7 +111,9 @@ impl Abrm {
     /// Constructs new `Abrm`, consider using [`super::ControlHandle::abrm`] instead.
     pub fn new<Ctrl: DeviceControl + ?Sized>(device: &mut Ctrl) -> ControlResult<Self> {
         let (capability_addr, capability_len) = abrm::DEVICE_CAPABILITY;
+        info!("reading device capability");
         let device_capability = read_register(device, capability_addr, capability_len)?;
+        info!("device capability read");
 
         Ok(Self { device_capability })
     }

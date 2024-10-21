@@ -32,9 +32,10 @@ impl From<ControlError> for GenTlError {
 
         match err {
             ControlError::Busy => ResourceInUse,
-            ControlError::Disconnected | ControlError::Io(..) | ControlError::InvalidDevice(..) => {
-                Io(err.into())
-            }
+            ControlError::Disconnected
+            | ControlError::Io(..)
+            | ControlError::InvalidDevice(..)
+            | ControlError::U3Error(..) => Io(err.into()),
             ControlError::NotOpened => NotInitialized,
             ControlError::InvalidData(..) => InvalidValue(format!("{}", err).into()),
             ControlError::Timeout => Timeout,

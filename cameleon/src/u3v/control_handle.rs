@@ -4,6 +4,8 @@
 
 //! This module contains low level device control implementation for `U3V` device.
 
+use futures_lite::future::block_on;
+use nusb::transfer::RequestBuffer;
 use std::{
     convert::TryInto,
     io::Read,
@@ -15,7 +17,7 @@ use cameleon_device::{
     u3v,
     u3v::protocol::{ack, cmd},
 };
-use tracing::error;
+use tracing::{debug, error, info};
 
 use super::register_map::{self, Abrm, ManifestTable, Sbrm, Sirm};
 
@@ -142,6 +144,7 @@ impl ControlHandle {
         if let Some(abrm) = self.abrm {
             return Ok(abrm);
         }
+        debug!("abrm new");
         let abrm = Abrm::new(self)?;
         self.abrm = Some(abrm);
 
@@ -211,7 +214,9 @@ impl ControlHandle {
     }
 
     fn initialize_config(&mut self) -> ControlResult<()> {
+        debug!("get abrm");
         let abrm = self.abrm()?;
+        debug!("get sbrm");
         let sbrm = abrm.sbrm(self)?;
 
         let timeout_duration = abrm.maximum_device_response_time(self)?;
@@ -238,19 +243,25 @@ impl ControlHandle {
         }
 
         // Serialize and send command.
-        cmd.serialize(self.buffer.as_mut_slice())?;
-        self.inner
-            .send(&self.buffer[..cmd_len], self.config.timeout_duration)?;
+        cmd.serialize(&mut self.buffer)?;
+        //  Send read request to the device.
+        let out_vec = block_on(self.inner.send(self.buffer[..cmd_len].to_vec()).unwrap())
+            .into_result()
+            .unwrap();
+        debug!("out vec: {:?}", out_vec);
 
         // Receive ack and interpret the packet.
         let mut retry_count = self.config.retry_count;
         let mut ok = None;
         while retry_count > 0 {
-            let recv_len = self
-                .inner
-                .recv(&mut self.buffer, self.config.timeout_duration)?;
-
-            let ack = ack::AckPacket::parse(&self.buffer[0..recv_len])?;
+            // Receive Acknowledge packet from the device.
+            info!("Receiving acklowledgments");
+            let serialized_ack = block_on(self.inner.recv(RequestBuffer::new(ack_len)).unwrap())
+                .into_result()
+                .unwrap();
+            // Parse Acknowledge packet.
+            info!("Parse acklowledgments");
+            let ack = ack::AckPacket::parse(&serialized_ack).unwrap();
             self.verify_ack(&ack)?;
 
             // Retry up to retry count.
@@ -262,7 +273,7 @@ impl ControlHandle {
             }
 
             self.next_req_id = self.next_req_id.wrapping_add(1);
-            ok = Some(recv_len);
+            ok = Some(serialized_ack.len());
             break;
         }
 
@@ -273,23 +284,23 @@ impl ControlHandle {
                 .unwrap()
                 .scd_as()?)
         } else {
-            Err(ControlError::Io(anyhow::Error::msg(
-                "the number of times pending was returned exceeds the retry_count.",
-            )))
+            Err(ControlError::Io(
+                "the number of times pending was returned exceeds the retry_count.".to_string(),
+            ))
         }
     }
 
     fn verify_ack(&self, ack: &ack::AckPacket) -> ControlResult<()> {
         let status = ack.status().kind();
         if status != ack::StatusKind::GenCp(ack::GenCpStatus::Success) {
-            return Err(ControlError::Io(anyhow::Error::msg(format!(
+            return Err(ControlError::Io(format!(
                 "invalid status: {:?}",
                 ack.status().kind()
-            ))));
+            )));
         }
 
         if ack.request_id() != self.next_req_id {
-            return Err(ControlError::Io(anyhow::Error::msg("request id mismatch")));
+            return Err(ControlError::Io("request id mismatch".to_string()));
         }
 
         Ok(())
@@ -327,28 +338,25 @@ macro_rules! unwrap_or_log {
 
 impl DeviceControl for ControlHandle {
     fn open(&mut self) -> ControlResult<()> {
+        info!("Check if open");
         if self.is_opened() {
             return Ok(());
         }
 
+        info!("open the inner");
         unwrap_or_log!(self.inner.open());
+        info!("clean up the control state");
         // Clean up control channel state.
-        unwrap_or_log!(self.inner.set_halt(self.config.timeout_duration));
         unwrap_or_log!(self.inner.clear_halt());
+        info!("initialize the config");
         unwrap_or_log!(self.initialize_config());
+        info!("opening done");
 
         Ok(())
     }
 
     fn is_opened(&self) -> bool {
-        self.inner.is_opened()
-    }
-
-    fn close(&mut self) -> ControlResult<()> {
-        if self.is_opened() {
-            unwrap_or_log!(self.inner.close());
-        }
-        Ok(())
+        self.inner.iface.is_some()
     }
 
     fn write(&mut self, address: u64, data: &[u8]) -> ControlResult<()> {
@@ -363,7 +371,7 @@ impl DeviceControl for ControlHandle {
 
             if ack.length as usize != chunk_data_len {
                 let err_msg = "write mem failed: written length mismatch";
-                return Err(ControlError::Io(anyhow::Error::msg(err_msg)));
+                return Err(ControlError::Io(err_msg.to_string()));
             }
         }
 
@@ -373,6 +381,7 @@ impl DeviceControl for ControlHandle {
     fn read(&mut self, mut address: u64, buf: &mut [u8]) -> ControlResult<()> {
         unwrap_or_log!(self.assert_open());
 
+        debug!("Read address");
         // Chunks buffer if buffer length is larger than maximum read length calculated from
         // maximum ack length.
         for buf_chunk in buf.chunks_mut(cmd::ReadMem::maximum_read_length(
@@ -501,14 +510,6 @@ impl DeviceControl for ControlHandle {
     }
 }
 
-impl Drop for ControlHandle {
-    fn drop(&mut self) {
-        if let Err(e) = self.close() {
-            error!(?e)
-        }
-    }
-}
-
 /// Thread safe version of [`ControlHandle`].
 #[derive(Clone)]
 pub struct SharedControlHandle(Arc<Mutex<ControlHandle>>);
@@ -575,7 +576,6 @@ impl DeviceControl for SharedControlHandle {
 
     impl_shared_control_handle! {
         fn open(&mut self) -> ControlResult<()>,
-        fn close(&mut self) -> ControlResult<()>,
         fn read(&mut self, address: u64, buf: &mut [u8]) -> ControlResult<()>,
         fn write(&mut self, address: u64, data: &[u8]) -> ControlResult<()>,
         fn genapi(&mut self) -> ControlResult<String>,
