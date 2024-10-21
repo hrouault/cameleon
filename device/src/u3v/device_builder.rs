@@ -45,7 +45,7 @@ impl DeviceBuilder {
             && di.protocol() == DEVICE_PROTOCOL
         {
             let device = di.open()?;
-            if let Some((iad, conf_desc)) = Self::find_u3v_iad(&device)? {
+            if let Some((iad, _conf_desc)) = Self::find_u3v_iad(&device)? {
                 return Ok(Some(Self {
                     di,
                     device,
@@ -86,16 +86,16 @@ impl DeviceBuilder {
             .interpret(&self.device)?;
 
         // Retrieve event and stream interface information if exists.
-        let receive_ifaces = interfaces.filter_map(|iface| {
-            ReceiveIfaceInfo::new(
-                &self
-                    .device
-                    .claim_interface(iface.interface_number())
-                    .unwrap(),
-            )
-        });
-        let mut receive_ifaces: Vec<(ReceiveIfaceInfo, ReceiveIfaceKind)> =
-            receive_ifaces.collect();
+        let mut receive_ifaces: Vec<(ReceiveIfaceInfo, ReceiveIfaceKind)> = interfaces
+            .filter_map(|iface| {
+                ReceiveIfaceInfo::new(
+                    &self
+                        .device
+                        .claim_interface(iface.interface_number())
+                        .unwrap(),
+                )
+            })
+            .collect();
 
         if receive_ifaces.len() > 2 {
             return Err(U3vError::InvalidDevice);
@@ -130,7 +130,7 @@ impl DeviceBuilder {
 
     fn find_u3v_iad(device: &nusb::Device) -> Result<Option<(Iad, descriptors::Configuration)>> {
         for conf in device.configurations() {
-            if let Some(u3v_iad) = Self::find_u3v_iad_in_config(&device, &conf) {
+            if let Some(u3v_iad) = Self::find_u3v_iad_in_config(device, &conf) {
                 return Ok(Some((u3v_iad, conf)));
             }
         }
@@ -203,6 +203,7 @@ impl DeviceBuilder {
 
 /// Interface Association Descriptor.
 #[allow(unused)]
+#[derive(Debug)]
 struct Iad {
     length: u8,
     descriptor_type: u8,
@@ -231,7 +232,7 @@ impl Iad {
         let function_subclass = desc[5];
         let function_protocol = desc[6];
         let function = desc[7];
-        return Some(Self {
+        Some(Self {
             length: desc_length as u8,
             descriptor_type,
             first_interface,
@@ -240,7 +241,7 @@ impl Iad {
             function_subclass,
             function_protocol,
             function,
-        });
+        })
     }
 }
 
@@ -287,15 +288,15 @@ impl DeviceInfoDescriptor {
         let gencp_version_major = u16::from_le_bytes(desc[5..7].try_into().unwrap());
         let u3v_version_minor = u16::from_le_bytes(desc[7..9].try_into().unwrap());
         let u3v_version_major = u16::from_le_bytes(desc[9..11].try_into().unwrap());
-        let guid_idx = desc[12];
-        let vendor_name_idx = desc[13];
-        let model_name_idx = desc[14];
-        let family_name_idx = desc[15];
-        let device_version_idx = desc[16];
-        let manufacturer_info_idx = desc[17];
-        let serial_number_idx = desc[18];
-        let user_defined_name_idx = desc[19];
-        let supported_speed_mask = desc[20];
+        let guid_idx = desc[11];
+        let vendor_name_idx = desc[12];
+        let model_name_idx = desc[13];
+        let family_name_idx = desc[14];
+        let device_version_idx = desc[15];
+        let manufacturer_info_idx = desc[16];
+        let serial_number_idx = desc[17];
+        let user_defined_name_idx = desc[18];
+        let supported_speed_mask = desc[19];
 
         Ok(Self {
             length: desc_length as u8,
@@ -453,7 +454,7 @@ impl ReceiveIfaceInfo {
     fn new(iface: &nusb::Interface) -> Option<(Self, ReceiveIfaceKind)> {
         let iface_number = iface.interface_number();
         for desc in iface.descriptors() {
-            if desc.interface_number() != 0 {
+            if desc.alternate_setting() != 0 {
                 continue;
             }
 
@@ -487,7 +488,7 @@ impl ReceiveIfaceInfo {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum ReceiveIfaceKind {
     Stream,
     Event,

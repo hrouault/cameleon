@@ -4,7 +4,8 @@
 
 //! This example describes how to start streaming and receive payloads.
 
-use cameleon::u3v::enumerate_cameras;
+use cameleon::{u3v::enumerate_cameras, PayloadStream};
+use futures_lite::future;
 
 fn main() {
     // Enumerates cameras connected to the host.
@@ -22,11 +23,11 @@ fn main() {
     // Load `GenApi` context.
     camera.load_context().unwrap();
 
-    // Start streaming. Channel capacity is set to 3.
-    let payload_rx = camera.start_streaming(3).unwrap();
+    // Start streaming. Can use buffered to add capacity to the stream
+    camera.start_streaming().unwrap();
 
     for _ in 0..10 {
-        let payload = match payload_rx.recv_blocking() {
+        let payload = match future::block_on(camera.strm.next_payload()) {
             Ok(payload) => payload,
             Err(e) => {
                 println!("payload receive error: {e}");
@@ -43,7 +44,7 @@ fn main() {
         }
 
         // Send back payload to streaming loop to reuse the buffer.
-        payload_rx.send_back(payload);
+        // payload_rx.send_back(payload);
     }
 
     camera.close().ok();

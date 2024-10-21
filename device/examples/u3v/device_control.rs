@@ -4,15 +4,15 @@
 
 extern crate cameleon_device;
 
-use std::ffi::CStr;
-use std::time::Duration;
-
 use cameleon_device::u3v::{
     enumerate_devices,
     prelude::*,
     protocol::{ack, cmd},
     register_map, Device,
 };
+use futures_lite::future::block_on;
+use nusb::transfer::RequestBuffer;
+use std::ffi::CStr;
 
 fn main() {
     // Enumerate devices connected to the host.
@@ -39,20 +39,24 @@ fn main() {
     // Create ReadMem Command with request id.
     let command = cmd::ReadMem::new(addr, len).finalize(request_id);
 
-    // Seirialize the command.
+    // Serialize the command.
     let mut serialized_command = vec![];
     command.serialize(&mut serialized_command).unwrap();
 
     //  Send read request to the device.
-    control_channel
-        .send(&serialized_command, Duration::from_millis(100))
+    block_on(control_channel.send(serialized_command).unwrap())
+        .into_result()
         .unwrap();
 
     // Receive Acknowledge packet from the device.
-    let mut serialized_ack = vec![0; command.maximum_ack_len()];
-    control_channel
-        .recv(&mut serialized_ack, Duration::from_millis(100))
-        .unwrap();
+    let serialized_ack = block_on(
+        control_channel
+            .recv(RequestBuffer::new(command.maximum_ack_len()))
+            .unwrap(),
+    )
+    .into_result()
+    .unwrap();
+
     // Parse Acknowledge packet.
     let ack = ack::AckPacket::parse(&serialized_ack).unwrap();
 

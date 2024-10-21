@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use crate::u3v::Result;
-use futures_lite::future::block_on;
+use crate::u3v::{Result, U3vError};
 use nusb::{
-    transfer::{ControlOut, ControlType, Recipient},
+    transfer::{ControlOut, ControlType, Recipient, RequestBuffer, TransferFuture},
     Interface,
 };
 use std::time;
@@ -19,37 +18,36 @@ pub struct ControlChannel {
 impl ControlChannel {
     pub fn open(&mut self) -> Result<()> {
         if self.iface.is_none() {
-            self.device.claim_interface(self.iface_info.iface_number)?;
+            self.iface = Some(self.device.claim_interface(self.iface_info.iface_number)?);
         }
 
         Ok(())
     }
-    //
-    //     pub fn send(&self, buf: &[u8], timeout: time::Duration) -> Result<usize> {
-    //         Ok(self
-    //             .iface
-    //             .bulk_out(self.iface_info.bulk_out_ep, buf, timeout)?)
-    //     }
-    //
-    //     pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
-    //         Ok(self
-    //             .iface
-    //             .bulk_in(self.iface_info.bulk_in_ep, buf, timeout)?)
-    //     }
-    //
-    //     pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
-    //         set_halt(&self.device_handle, self.iface_info.bulk_in_ep, timeout)?;
-    //         set_halt(&self.device_handle, self.iface_info.bulk_out_ep, timeout)?;
-    //
-    //         Ok(())
-    //     }
-    //
-    //     pub fn clear_halt(&mut self) -> Result<()> {
-    //         self.device_handle.clear_halt(self.iface_info.bulk_in_ep)?;
-    //         self.device_handle.clear_halt(self.iface_info.bulk_out_ep)?;
-    //         Ok(())
-    //     }
-    //
+
+    pub fn send(&self, buf: Vec<u8>) -> Result<TransferFuture<Vec<u8>>> {
+        if let Some(iface) = &self.iface {
+            Ok(iface.bulk_out(self.iface_info.bulk_out_ep, buf))
+        } else {
+            Err(U3vError::NoInterface)
+        }
+    }
+
+    pub fn recv(&self, buf: RequestBuffer) -> Result<TransferFuture<RequestBuffer>> {
+        if let Some(iface) = &self.iface {
+            Ok(iface.bulk_in(self.iface_info.bulk_in_ep, buf))
+        } else {
+            Err(U3vError::NoInterface)
+        }
+    }
+
+    pub fn clear_halt(&mut self) -> Result<()> {
+        if let Some(iface) = &self.iface {
+            iface.clear_halt(self.iface_info.bulk_in_ep)?;
+            iface.clear_halt(self.iface_info.bulk_out_ep)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn new(device: nusb::Device, iface_info: ControlIfaceInfo) -> Self {
         Self {
             device,
