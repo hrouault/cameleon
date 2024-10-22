@@ -35,7 +35,9 @@ impl From<ControlError> for GenTlError {
             ControlError::Disconnected
             | ControlError::Io(..)
             | ControlError::InvalidDevice(..)
-            | ControlError::U3Error(..) => Io(err.into()),
+            | ControlError::U3Error(..)
+            | ControlError::StdIo(..)
+            | ControlError::TransferError(..) => Io(err.into()),
             ControlError::NotOpened => NotInitialized,
             ControlError::InvalidData(..) => InvalidValue(format!("{}", err).into()),
             ControlError::Timeout => Timeout,

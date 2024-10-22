@@ -8,6 +8,10 @@ use cameleon::{u3v::enumerate_cameras, PayloadStream};
 use futures_lite::future;
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
     // Enumerates cameras connected to the host.
     let mut cameras = enumerate_cameras().unwrap();
 
@@ -44,7 +48,7 @@ fn main() {
         }
 
         // Send back payload to streaming loop to reuse the buffer.
-        // payload_rx.send_back(payload);
+        let _ = camera.strm.reuse_payload(payload.reuse_payload());
     }
 
     camera.close().ok();

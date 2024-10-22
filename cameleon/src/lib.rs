@@ -202,6 +202,14 @@ pub enum ControlError {
     #[error("input/output error: {0}")]
     Io(String),
 
+    /// std IO error.
+    #[error("input/output error: {0}")]
+    StdIo(#[from] std::io::Error),
+
+    /// usb transfer error
+    #[error("nusb transfer error: {0}")]
+    TransferError(#[from] nusb::transfer::TransferError),
+
     /// USB3 error
     #[error("input/output error: {0}")]
     U3Error(#[from] U3vError),

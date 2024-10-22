@@ -6,7 +6,7 @@
 
 use crate::camera::PayloadStream;
 use nusb::transfer::{Queue, RequestBuffer};
-use std::{sync::mpsc, time::Duration};
+use std::time::Duration;
 
 use cameleon_device::u3v::{
     self,
@@ -27,7 +27,6 @@ pub struct StreamHandle {
     pub stream_channel: u3v::ReceiveChannel,
     /// Parameters for streaming.
     params: StreamParams,
-    cancellation_tx: Option<mpsc::SyncSender<()>>,
 
     leader_buf: Option<Vec<u8>>,
     trailer_buf: Option<Vec<u8>>,
@@ -41,14 +40,10 @@ impl StreamHandle {
     pub(super) fn new(device: &u3v::Device) -> ControlResult<Option<Self>> {
         info!("get stream channel");
         let channel = device.stream_channel()?;
-        if channel.is_none() {
-            info!("channel is none");
-        }
 
         Ok(channel.map(|channel| Self {
             stream_channel: channel,
             params: StreamParams::default(),
-            cancellation_tx: None,
 
             leader_buf: None,
             trailer_buf: None,
@@ -148,12 +143,28 @@ impl StreamHandle {
             None => vec![0; maximum_payload_size],
         };
 
-        for i in 0..self.params.payload_count {
+        let mut cursor = 0;
+        for _i in 0..self.params.payload_count {
             let payload_size = self.params.payload_size;
             let completion = queue.next_complete().await.into_result()?;
-            pic_buf[i * payload_size..(i + 1) * payload_size].clone_from_slice(&completion);
+            pic_buf[cursor..cursor + payload_size].clone_from_slice(&completion);
+            cursor += payload_size;
             self.payload_bufs.push(completion);
         }
+        let final1 = self.params.payload_final1_size;
+        if final1 != 0 {
+            let completion = queue.next_complete().await.into_result()?;
+            pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
+            cursor += final1;
+            self.final1_buf = Some(completion);
+        }
+        let final2 = self.params.payload_final2_size;
+        if final2 != 0 {
+            let completion = queue.next_complete().await.into_result()?;
+            pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
+            self.final2_buf = Some(completion);
+        }
+        self.pic_buf = Some(pic_buf);
         Ok(())
     }
 
@@ -179,13 +190,6 @@ impl PayloadStream for StreamHandle {
         })
     }
 
-    fn close(&mut self) -> StreamResult<()> {
-        if self.is_loop_running() {
-            self.stop_streaming()?;
-        }
-        Ok(())
-    }
-
     fn start_streaming(&mut self, ctrl: &mut dyn DeviceControl) -> StreamResult<()> {
         self.params = StreamParams::from_control(ctrl).map_err(|e| {
             StreamError::Io(anyhow::Error::msg(format!(
@@ -194,9 +198,6 @@ impl PayloadStream for StreamHandle {
             )))
         })?;
 
-        if self.is_loop_running() {
-            return Err(StreamError::InStreaming);
-        };
         Ok(())
     }
 
@@ -233,22 +234,9 @@ impl PayloadStream for StreamHandle {
         .build()
     }
 
-    fn stop_streaming(&mut self) -> StreamResult<()> {
-        if self.is_loop_running() {
-            let cancellation_tx = self.cancellation_tx.take().unwrap();
-            // Since `cancellation` channel has a capacity of 0, this blocks until the streaming
-            // loop receives it.
-            cancellation_tx.send(()).map_err(|_| {
-                StreamError::Poisoned("failed to send cancellation signal to streaming loop".into())
-            })?;
-        }
-
-        info!("stop streaming loop successfully");
+    fn reuse_payload(&mut self, payload: Vec<u8>) -> Result<(), StreamError> {
+        self.pic_buf = Some(payload);
         Ok(())
-    }
-
-    fn is_loop_running(&self) -> bool {
-        self.cancellation_tx.is_some()
     }
 }
 

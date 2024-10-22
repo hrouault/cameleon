@@ -81,6 +81,12 @@ impl Payload {
         &self.payload[..self.valid_payload_size]
     }
 
+    /// Returns the whole payload. Use [`Self::image`] instead if you interested only
+    /// in image region of the payload.
+    pub fn reuse_payload(self) -> Vec<u8> {
+        self.payload
+    }
+
     /// Returns unique id of `payload`, which sequentially incremented every time the device send a
     /// `payload`.
     pub fn id(&self) -> u64 {

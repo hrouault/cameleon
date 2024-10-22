@@ -4,10 +4,9 @@
 
 use crate::u3v::{Result, U3vError};
 use nusb::{
-    transfer::{ControlOut, ControlType, Recipient, RequestBuffer, TransferFuture},
+    transfer::{RequestBuffer, TransferFuture},
     Interface,
 };
-use std::time;
 
 pub struct ControlChannel {
     pub(super) device: nusb::Device,
@@ -66,7 +65,7 @@ pub struct ReceiveChannel {
 impl ReceiveChannel {
     pub fn open(&mut self) -> Result<()> {
         if self.iface.is_none() {
-            self.device.claim_interface(self.iface_info.iface_number)?;
+            self.iface = Some(self.device.claim_interface(self.iface_info.iface_number)?);
         }
 
         Ok(())

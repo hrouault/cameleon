@@ -63,7 +63,7 @@ use tracing::info;
 use super::{
     genapi::{DefaultGenApiCtxt, FromXml, GenApiCtxt, ParamsCtxt},
     payload::Payload,
-    CameleonError, CameleonResult, ControlResult, StreamError, StreamResult,
+    CameleonError, CameleonResult, ControlResult, StreamResult,
 };
 
 /// Provides easy-to-use access to a `GenICam` compatible camera.
@@ -169,9 +169,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         Strm: PayloadStream,
     {
         info!("try opening the device");
-        info!("Opening the control");
         self.ctrl.open()?;
-        info!("opening the stream");
         self.strm.open()?;
         info!("opened the device successfully");
         Ok(())
@@ -298,10 +296,6 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     {
         info!("try starting streaming");
 
-        if self.strm.is_loop_running() {
-            return Err(StreamError::InStreaming.into());
-        }
-
         // Enable streaimng.
         self.ctrl.enable_streaming()?;
         let mut ctxt = self.params_ctxt()?;
@@ -309,6 +303,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         expect_node!(&ctxt, "AcquisitionStart", as_command).execute(&mut ctxt)?;
 
         self.strm.start_streaming(&mut self.ctrl)?;
+        info!("start streaming successfully");
         Ok(())
     }
 
@@ -349,13 +344,6 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         Ctxt: GenApiCtxt,
     {
         info!("try stopping streaming");
-        if !self.strm.is_loop_running() {
-            return Ok(());
-        }
-
-        // Stop streaming loop.
-        self.strm.stop_streaming()?;
-
         // Disable streaming.
         let mut ctxt = self.params_ctxt()?;
         expect_node!(&ctxt, "AcquisitionStop", as_command).execute(&mut ctxt)?;
@@ -553,18 +541,12 @@ pub trait PayloadStream {
     /// Opens the handle.
     fn open(&mut self) -> StreamResult<()>;
 
-    /// Closes the handle.
-    fn close(&mut self) -> StreamResult<()>;
-
     /// Starts streaming.
     fn start_streaming(&mut self, ctrl: &mut dyn DeviceControl) -> StreamResult<()>;
 
     /// Get the next payload (asynchronous).
     fn next_payload(&mut self) -> impl std::future::Future<Output = StreamResult<Payload>>;
 
-    /// Stops streaming.
-    fn stop_streaming(&mut self) -> StreamResult<()>;
-
-    /// Returns `true` if streaming loop is running.
-    fn is_loop_running(&self) -> bool;
+    /// Reuse the payload.
+    fn reuse_payload(&mut self, payload: Vec<u8>) -> StreamResult<()>;
 }
