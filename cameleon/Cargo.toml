@@ -29,6 +29,7 @@ anyhow = "1.0.40"
 futures-lite = "2.3.0"
 nusb = "0.1.10"
 futures-core = "0.3.31"
+futures-time = "3.0.0"
 
 [dev-dependencies]
 trybuild = "1.0.42"

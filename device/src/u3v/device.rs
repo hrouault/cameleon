@@ -83,8 +83,6 @@ impl Device {
     }
 }
 
-pub(super) type NUsbDevice = nusb::Device;
-
 cfg_if::cfg_if! {
 if #[cfg(target_os = "windows")] {
     use std::{

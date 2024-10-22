@@ -5,6 +5,7 @@
 //! This module contains low level device control implementation for `U3V` device.
 
 use futures_lite::future::block_on;
+use futures_time::prelude::*;
 use nusb::transfer::RequestBuffer;
 use std::{
     convert::TryInto,
@@ -17,7 +18,7 @@ use cameleon_device::{
     u3v,
     u3v::protocol::{ack, cmd},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use super::register_map::{self, Abrm, ManifestTable, Sbrm, Sirm};
 
@@ -71,7 +72,9 @@ pub struct ControlHandle {
     /// Request id of the next packet.
     next_req_id: u16,
     /// Buffer for serializing/deserializing a packet.
-    buffer: Vec<u8>,
+    buffer: Option<Vec<u8>>,
+    /// Acknowledgement buffer
+    ack_buffer: Option<Vec<u8>>,
 
     /// Device information.
     info: u3v::DeviceInfo,
@@ -87,21 +90,6 @@ pub struct ControlHandle {
 }
 
 impl ControlHandle {
-    /// Capacity of the buffer inside [`ControlHandle`], the buffer is used for
-    /// serializing/deserializing packet. This buffer automatically extend according to packet
-    /// length.
-    pub fn buffer_capacity(&self) -> usize {
-        self.buffer.capacity()
-    }
-
-    /// Resize the capacity of the buffer inside [`ControlHandle`], the buffer is used for
-    /// serializing/deserializing packet. This buffer automatically extend according to packet
-    /// length.
-    pub fn resize_buffer(&mut self, size: usize) {
-        self.buffer.resize(size, 0);
-        self.buffer.shrink_to_fit();
-    }
-
     /// Timeout duration of each transaction between device.
     ///
     /// NOTE: [`ControlHandle::read`] and [`ControlHandle::write`] may send multiple
@@ -196,7 +184,8 @@ impl ControlHandle {
             inner,
             config: ConnectionConfig::default(),
             next_req_id: 0,
-            buffer: Vec::new(),
+            buffer: None,
+            ack_buffer: None,
             info: device.device_info.clone(),
             abrm: None,
             sbrm: None,
@@ -230,57 +219,81 @@ impl ControlHandle {
         Ok(())
     }
 
-    fn send_cmd<'a, T, U>(&'a mut self, cmd: T) -> ControlResult<U>
+    async fn send_cmd<'a, T, U>(&'a mut self, cmd: T) -> ControlResult<U>
     where
         T: cmd::CommandScd,
         U: ack::ParseScd<'a>,
     {
+        let fut_timeout: futures_time::time::Duration = self.config.timeout_duration.into();
+
         let cmd = cmd.finalize(self.next_req_id);
         let cmd_len = cmd.cmd_len();
-        let ack_len = cmd.maximum_ack_len();
-        if self.buffer.len() < std::cmp::max(cmd_len, ack_len) {
-            self.buffer.resize(std::cmp::max(cmd_len, ack_len), 0);
-        }
+        let mut buf = match self.buffer.take() {
+            Some(mut buf) => {
+                if buf.len() != cmd_len {
+                    buf.resize(cmd_len, 0);
+                };
+                buf
+            }
+            None => vec![0; cmd_len],
+        };
+        cmd.serialize(buf.as_mut_slice())?;
+        let out_vec = self
+            .inner
+            .send(buf)?
+            .timeout(fut_timeout)
+            .await?
+            .into_result()?;
+        self.buffer = Some(out_vec.reuse());
 
-        // Serialize and send command.
-        cmd.serialize(&mut self.buffer)?;
-        //  Send read request to the device.
-        let out_vec = block_on(self.inner.send(self.buffer[..cmd_len].to_vec()).unwrap())
-            .into_result()
-            .unwrap();
-        debug!("out vec: {:?}", out_vec);
+        let ack_len = cmd.maximum_ack_len();
 
         // Receive ack and interpret the packet.
         let mut retry_count = self.config.retry_count;
-        let mut ok = None;
+        let mut ok = false;
         while retry_count > 0 {
             // Receive Acknowledge packet from the device.
-            info!("Receiving acklowledgments");
-            let serialized_ack = block_on(self.inner.recv(RequestBuffer::new(ack_len)).unwrap())
-                .into_result()
-                .unwrap();
+            let ack_buf = match self.ack_buffer.take() {
+                Some(buf) => buf,
+                None => vec![0; ack_len],
+            };
+            let future = self
+                .inner
+                .recv(RequestBuffer::reuse(ack_buf, ack_len))?
+                .timeout(fut_timeout);
+            let ack_ret = match future.await {
+                Ok(res) => res.into_result().unwrap(),
+                Err(err) => {
+                    debug!("Timeout!: {:?}", err);
+                    retry_count -= 1;
+                    continue;
+                }
+            };
             // Parse Acknowledge packet.
-            info!("Parse acklowledgments");
-            let ack = ack::AckPacket::parse(&serialized_ack).unwrap();
+            let ack = ack::AckPacket::parse(&ack_ret).unwrap();
             self.verify_ack(&ack)?;
 
             // Retry up to retry count.
             if ack.scd_kind() == ack::ScdKind::Pending {
                 let pending_ack: ack::Pending = ack.scd_as()?;
-                std::thread::sleep(pending_ack.timeout);
+                let timeout: futures_time::time::Duration = pending_ack.timeout.into();
+                async {}.delay(timeout).await;
                 retry_count -= 1;
+                self.ack_buffer = Some(ack_ret);
                 continue;
             }
 
             self.next_req_id = self.next_req_id.wrapping_add(1);
-            ok = Some(serialized_ack.len());
+            ok = true;
+            self.ack_buffer = Some(ack_ret);
             break;
         }
 
+        debug!("Parsing again?");
         // This codes seems weird due to a lifetime problem.
         // `ack::AckPacket::parse` is a fast operation, so it's ok to call it repeatedly.
-        if let Some(recv_len) = ok {
-            Ok(ack::AckPacket::parse(&self.buffer[0..recv_len])
+        if ok {
+            Ok(ack::AckPacket::parse(self.ack_buffer.as_ref().unwrap())
                 .unwrap()
                 .scd_as()?)
         } else {
@@ -338,19 +351,14 @@ macro_rules! unwrap_or_log {
 
 impl DeviceControl for ControlHandle {
     fn open(&mut self) -> ControlResult<()> {
-        info!("Check if open");
         if self.is_opened() {
             return Ok(());
         }
 
-        info!("open the inner");
         unwrap_or_log!(self.inner.open());
-        info!("clean up the control state");
         // Clean up control channel state.
         unwrap_or_log!(self.inner.clear_halt());
-        info!("initialize the config");
         unwrap_or_log!(self.initialize_config());
-        info!("opening done");
 
         Ok(())
     }
@@ -367,7 +375,7 @@ impl DeviceControl for ControlHandle {
 
         for chunk in cmd.chunks(maximum_cmd_length as usize).unwrap() {
             let chunk_data_len = chunk.data_len();
-            let ack: ack::WriteMem = unwrap_or_log!(self.send_cmd(chunk));
+            let ack: ack::WriteMem = unwrap_or_log!(block_on(self.send_cmd(chunk)));
 
             if ack.length as usize != chunk_data_len {
                 let err_msg = "write mem failed: written length mismatch";
@@ -381,7 +389,6 @@ impl DeviceControl for ControlHandle {
     fn read(&mut self, mut address: u64, buf: &mut [u8]) -> ControlResult<()> {
         unwrap_or_log!(self.assert_open());
 
-        debug!("Read address");
         // Chunks buffer if buffer length is larger than maximum read length calculated from
         // maximum ack length.
         for buf_chunk in buf.chunks_mut(cmd::ReadMem::maximum_read_length(
@@ -391,7 +398,8 @@ impl DeviceControl for ControlHandle {
             let read_len: u16 = buf_chunk.len().try_into().unwrap();
 
             let cmd = cmd::ReadMem::new(address, read_len);
-            let ack: ack::ReadMem = unwrap_or_log!(self.send_cmd(cmd));
+            debug!("Read address with cmd: {:?}", cmd);
+            let ack: ack::ReadMem = unwrap_or_log!(block_on(self.send_cmd(cmd)));
             buf_chunk.copy_from_slice(ack.data);
             address += read_len as u64;
         }
@@ -428,11 +436,10 @@ impl DeviceControl for ControlHandle {
         let file_size: usize = unwrap_or_log!(unwrap_or_log!(ent.file_size(self)).try_into());
         let comp_type = unwrap_or_log!(file_info.compression_type());
 
-        // Store current capacity so that we can set back it after XML retrieval because this needs exceptional large size of internal buffer.
-        let current_capacity = self.buffer_capacity();
+        // drop buffer after XML retrieval because this needs exceptional large size of internal buffer.
         let mut buf = vec![0; file_size];
         unwrap_or_log!(self.read(file_address, &mut buf));
-        self.resize_buffer(current_capacity);
+        self.buffer = None;
 
         // Verify retrieved xml has correct hash.
         unwrap_or_log!(self.verify_xml(&buf, ent));
@@ -546,11 +553,6 @@ impl From<ControlHandle> for SharedControlHandle {
 
 impl SharedControlHandle {
     impl_shared_control_handle!(
-        /// Thread safe version of [`ControlHandle::buffer_capacity`].
-        #[must_use]
-        pub fn buffer_capacity(&self) -> usize,
-        /// Thread safe version of [`ControlHandle::resize_buffer`].
-        pub fn resize_buffer(&self, size: usize) -> (),
         #[must_use]
         /// Thread safe version of [`ControlHandle::timeout_duration`].
         pub fn timeout_duration(&self) -> Duration,

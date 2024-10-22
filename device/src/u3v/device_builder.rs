@@ -7,6 +7,7 @@ use super::{
     device::Device,
 };
 use crate::u3v::{BusSpeed, DeviceInfo, Result, U3vError};
+use log::debug;
 use nusb::{
     descriptors::{self, language_id::US_ENGLISH, Descriptor},
     transfer::{Direction, EndpointType},
@@ -66,6 +67,7 @@ impl DeviceBuilder {
 
         // Retrieve control interface information.
         let ctrl_iface_info = interfaces.next().ok_or(U3vError::InvalidDevice)?;
+        debug!("Control interface info: {:?}", ctrl_iface_info);
         let ctrl_iface = self
             .device
             .claim_interface(ctrl_iface_info.interface_number())?;
