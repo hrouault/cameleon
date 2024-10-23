@@ -159,6 +159,10 @@ pub type CameleonResult<T> = std::result::Result<T, CameleonError>;
 /// An error type returned from the `camera::Camera`.
 #[derive(Debug, thiserror::Error)]
 pub enum CameleonError {
+    /// No camera found
+    #[error("No camera found")]
+    NoCamera,
+
     /// An error from device control.
     #[error("control error: {0}")]
     ControlError(#[from] ControlError),
