@@ -4,20 +4,19 @@
 
 //! This module contains low level streaming implementation for `U3V` device.
 
-use crate::camera::PayloadStream;
-use nusb::transfer::{Queue, RequestBuffer};
-use std::time::Duration;
-
+use crate::{
+    camera::PayloadStream,
+    payload::{ImageInfo, Payload, PayloadType},
+    ControlError, ControlResult, DeviceControl, StreamError, StreamResult,
+};
 use cameleon_device::u3v::{
     self,
     protocol::stream::{self as u3v_stream, Leader, Trailer},
 };
+use futures_lite::{stream, Stream};
+use nusb::transfer::{Queue, RequestBuffer};
+use std::{sync::mpsc::Receiver, time::Duration};
 use tracing::{error, info};
-
-use crate::{
-    payload::{ImageInfo, Payload, PayloadType},
-    ControlError, ControlResult, DeviceControl, StreamError, StreamResult,
-};
 
 use super::register_map::Abrm;
 
@@ -27,6 +26,8 @@ pub struct StreamHandle {
     pub stream_channel: u3v::ReceiveChannel,
     /// Parameters for streaming.
     params: StreamParams,
+
+    payload_rx: Option<Receiver<Vec<u8>>>,
 
     leader_buf: Option<Vec<u8>>,
     trailer_buf: Option<Vec<u8>>,
@@ -44,6 +45,8 @@ impl StreamHandle {
         Ok(channel.map(|channel| Self {
             stream_channel: channel,
             params: StreamParams::default(),
+
+            payload_rx: None,
 
             leader_buf: None,
             trailer_buf: None,
@@ -140,7 +143,17 @@ impl StreamHandle {
                 }
                 buf
             }
-            None => vec![0; maximum_payload_size],
+            None => {
+                if let Some(pay_rx) = &self.payload_rx {
+                    if let Ok(buf) = pay_rx.try_recv() {
+                        buf
+                    } else {
+                        vec![0; maximum_payload_size]
+                    }
+                } else {
+                    vec![0; maximum_payload_size]
+                }
+            }
         };
 
         let mut cursor = 0;
@@ -180,26 +193,6 @@ impl StreamHandle {
             None => Err(StreamError::NoBuffer),
         }
     }
-}
-
-impl PayloadStream for StreamHandle {
-    fn open(&mut self) -> StreamResult<()> {
-        self.stream_channel.open().map_err(|e| {
-            error!(?e);
-            e.into()
-        })
-    }
-
-    fn start_streaming(&mut self, ctrl: &mut dyn DeviceControl) -> StreamResult<()> {
-        self.params = StreamParams::from_control(ctrl).map_err(|e| {
-            StreamError::Io(anyhow::Error::msg(format!(
-                "failed to setup streaming parameters: {}",
-                e
-            )))
-        })?;
-
-        Ok(())
-    }
 
     async fn next_payload(&mut self) -> Result<Payload, StreamError> {
         let mut queue = {
@@ -232,6 +225,36 @@ impl PayloadStream for StreamHandle {
             trailer,
         }
         .build()
+    }
+}
+
+impl PayloadStream for StreamHandle {
+    fn open(&mut self) -> StreamResult<()> {
+        self.stream_channel.open().map_err(|e| {
+            error!(?e);
+            e.into()
+        })
+    }
+
+    /// Get an async stream that return a stream of payload results
+    fn start_streaming(
+        &mut self,
+        ctrl: &mut dyn DeviceControl,
+        payload_rx: Receiver<Vec<u8>>,
+    ) -> StreamResult<impl Stream<Item = StreamResult<Payload>>> {
+        self.params = StreamParams::from_control(ctrl).map_err(|e| {
+            StreamError::Io(anyhow::Error::msg(format!(
+                "failed to setup streaming parameters: {}",
+                e
+            )))
+        })?;
+
+        self.payload_rx = Some(payload_rx);
+
+        Ok(stream::unfold(self, |stream| async move {
+            let payload = stream.next_payload().await;
+            Some((payload, stream))
+        }))
     }
 
     fn reuse_payload(&mut self, payload: Vec<u8>) -> Result<(), StreamError> {

@@ -57,14 +57,15 @@
 //! camera.close().unwrap();
 //! ```
 
-use auto_impl::auto_impl;
-use tracing::info;
-
 use super::{
     genapi::{DefaultGenApiCtxt, FromXml, GenApiCtxt, ParamsCtxt},
-    payload::Payload,
     CameleonError, CameleonResult, ControlResult, StreamResult,
 };
+use crate::payload::Payload;
+use auto_impl::auto_impl;
+use futures_lite::Stream;
+use std::sync::mpsc::Receiver;
+use tracing::info;
 
 /// Provides easy-to-use access to a `GenICam` compatible camera.
 ///
@@ -285,10 +286,13 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     ///
     /// # Panics
     /// If `cap` is zero, this method will panic.
-    #[tracing::instrument(skip(self),
+    #[tracing::instrument(skip(self, payload_rx),
                           level = "info",
                           fields(camera = ?self.info()))]
-    pub fn start_streaming(&mut self) -> CameleonResult<()>
+    pub fn start_streaming(
+        &mut self,
+        payload_rx: Receiver<Vec<u8>>,
+    ) -> CameleonResult<impl Stream<Item = StreamResult<Payload>> + '_>
     where
         Ctrl: DeviceControl,
         Strm: PayloadStream,
@@ -301,10 +305,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         let mut ctxt = self.params_ctxt()?;
         expect_node!(&ctxt, "TLParamsLocked", as_integer).set_value(&mut ctxt, 1)?;
         expect_node!(&ctxt, "AcquisitionStart", as_command).execute(&mut ctxt)?;
-
-        self.strm.start_streaming(&mut self.ctrl)?;
-        info!("start streaming successfully");
-        Ok(())
+        Ok(self.strm.start_streaming(&mut self.ctrl, payload_rx)?)
     }
 
     /// Stops the streaming.
@@ -542,10 +543,11 @@ pub trait PayloadStream {
     fn open(&mut self) -> StreamResult<()>;
 
     /// Starts streaming.
-    fn start_streaming(&mut self, ctrl: &mut dyn DeviceControl) -> StreamResult<()>;
-
-    /// Get the next payload (asynchronous).
-    fn next_payload(&mut self) -> impl std::future::Future<Output = StreamResult<Payload>>;
+    fn start_streaming(
+        &mut self,
+        ctrl: &mut dyn DeviceControl,
+        payload_rx: Receiver<Vec<u8>>,
+    ) -> StreamResult<impl Stream<Item = StreamResult<Payload>>>;
 
     /// Reuse the payload.
     fn reuse_payload(&mut self, payload: Vec<u8>) -> StreamResult<()>;
