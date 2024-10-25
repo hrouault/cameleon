@@ -548,7 +548,4 @@ pub trait PayloadStream {
         ctrl: &mut dyn DeviceControl,
         payload_rx: Receiver<Vec<u8>>,
     ) -> StreamResult<impl Stream<Item = StreamResult<Payload>>>;
-
-    /// Reuse the payload.
-    fn reuse_payload(&mut self, payload: Vec<u8>) -> StreamResult<()>;
 }

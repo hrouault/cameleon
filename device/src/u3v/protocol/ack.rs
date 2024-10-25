@@ -6,7 +6,7 @@ use std::{io::Cursor, time};
 
 use cameleon_impl::bytes_io::ReadBytes;
 
-use crate::u3v::{Result, U3vError};
+use crate::u3v::{U3vError, U3vResult};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AckPacket<'a> {
@@ -17,7 +17,7 @@ pub struct AckPacket<'a> {
 impl<'a> AckPacket<'a> {
     const PREFIX_MAGIC: u32 = 0x4356_3355;
 
-    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> Result<Self> {
+    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf.as_ref());
 
         Self::parse_prefix(&mut cursor)?;
@@ -43,7 +43,7 @@ impl<'a> AckPacket<'a> {
         self.raw_scd
     }
 
-    pub fn scd_as<T: ParseScd<'a>>(&self) -> Result<T> {
+    pub fn scd_as<T: ParseScd<'a>>(&self) -> U3vResult<T> {
         T::parse(self.raw_scd, &self.ccd)
     }
 
@@ -57,7 +57,7 @@ impl<'a> AckPacket<'a> {
         self.ccd.request_id
     }
 
-    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> Result<()> {
+    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> U3vResult<()> {
         let magic: u32 = cursor.read_bytes_le()?;
         if magic == Self::PREFIX_MAGIC {
             Ok(())
@@ -96,7 +96,7 @@ impl AckCcd {
         self.scd_len
     }
 
-    fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+    fn parse(cursor: &mut Cursor<&[u8]>) -> U3vResult<Self> {
         let status = Status::parse(cursor)?;
         let scd_kind = ScdKind::parse(cursor)?;
         let scd_len = cursor.read_bytes_le()?;
@@ -203,7 +203,7 @@ impl Status {
         self.kind
     }
 
-    fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+    fn parse(cursor: &mut Cursor<&[u8]>) -> U3vResult<Self> {
         let code: u16 = cursor.read_bytes_le()?;
 
         let namespace = (code >> 13_i32) & 0x11;
@@ -220,7 +220,7 @@ impl Status {
         }
     }
 
-    fn parse_gencp_status(code: u16) -> Result<Self> {
+    fn parse_gencp_status(code: u16) -> U3vResult<Self> {
         use GenCpStatus::{
             AccessDenied, BadAlignment, Busy, GenericError, InvalidAddress, InvalidHeader,
             InvalidParameter, NotImplemented, Success, Timeout, WriteProtect, WrongConfig,
@@ -254,7 +254,7 @@ impl Status {
         })
     }
 
-    fn parse_usb_status(code: u16) -> Result<Self> {
+    fn parse_usb_status(code: u16) -> U3vResult<Self> {
         use UsbSpecificStatus::{
             EventEndpointHalted, InvalidSiState, PayloadSizeNotAligned, ResendNotSupported,
             StreamEndpointHalted,
@@ -292,7 +292,7 @@ pub enum ScdKind {
 }
 
 impl ScdKind {
-    fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+    fn parse(cursor: &mut Cursor<&[u8]>) -> U3vResult<Self> {
         let id: u16 = cursor.read_bytes_le()?;
         match id {
             0x0801 => Ok(ScdKind::ReadMem),
@@ -308,7 +308,7 @@ impl ScdKind {
 }
 
 pub trait ParseScd<'a>: Sized {
-    fn parse(buf: &'a [u8], ccd: &AckCcd) -> Result<Self>;
+    fn parse(buf: &'a [u8], ccd: &AckCcd) -> U3vResult<Self>;
 }
 
 pub struct ReadMem<'a> {
@@ -336,7 +336,7 @@ pub struct CustomAck<'a> {
 }
 
 impl<'a> ParseScd<'a> for ReadMem<'a> {
-    fn parse(buf: &'a [u8], ccd: &AckCcd) -> Result<Self> {
+    fn parse(buf: &'a [u8], ccd: &AckCcd) -> U3vResult<Self> {
         let scd_len = ccd.scd_len() as usize;
         if buf.len() < scd_len {
             return Err(U3vError::InvalidPacket(
@@ -349,7 +349,7 @@ impl<'a> ParseScd<'a> for ReadMem<'a> {
 }
 
 impl<'a> ParseScd<'a> for WriteMem {
-    fn parse(buf: &'a [u8], _ccd: &AckCcd) -> Result<Self> {
+    fn parse(buf: &'a [u8], _ccd: &AckCcd) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf);
         let reserved: u16 = cursor.read_bytes_le()?;
         if reserved != 0 {
@@ -364,7 +364,7 @@ impl<'a> ParseScd<'a> for WriteMem {
 }
 
 impl<'a> ParseScd<'a> for Pending {
-    fn parse(buf: &'a [u8], _ccd: &AckCcd) -> Result<Self> {
+    fn parse(buf: &'a [u8], _ccd: &AckCcd) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf);
         let reserved: u16 = cursor.read_bytes_le()?;
         if reserved != 0 {
@@ -380,7 +380,7 @@ impl<'a> ParseScd<'a> for Pending {
 }
 
 impl<'a> ParseScd<'a> for ReadMemStacked<'a> {
-    fn parse(buf: &'a [u8], ccd: &AckCcd) -> Result<Self> {
+    fn parse(buf: &'a [u8], ccd: &AckCcd) -> U3vResult<Self> {
         let scd_len = ccd.scd_len() as usize;
         if buf.len() < scd_len {
             return Err(U3vError::InvalidPacket(
@@ -393,7 +393,7 @@ impl<'a> ParseScd<'a> for ReadMemStacked<'a> {
 }
 
 impl<'a> ParseScd<'a> for WriteMemStacked {
-    fn parse(buf: &'a [u8], ccd: &AckCcd) -> Result<Self> {
+    fn parse(buf: &'a [u8], ccd: &AckCcd) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf);
         let mut to_read = ccd.scd_len as usize;
         let mut lengths = Vec::with_capacity(to_read / 4);

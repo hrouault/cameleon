@@ -12,7 +12,7 @@ use std::{
 use cameleon_impl::bytes_io::ReadBytes;
 
 use crate::{
-    u3v::{Result, U3vError},
+    u3v::{U3vError, U3vResult},
     PixelFormat,
 };
 
@@ -63,7 +63,7 @@ impl<'a> Leader<'a> {
     const LEADER_MAGIC: u32 = 0x4C56_3355;
 
     /// Parse bytes as Leader.
-    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> Result<Self> {
+    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf.as_ref());
 
         Self::parse_prefix(&mut cursor)?;
@@ -108,7 +108,7 @@ impl<'a> Leader<'a> {
     ///     }
     /// }
     /// ```
-    pub fn specific_leader_as<T: SpecificLeader>(&self) -> Result<T> {
+    pub fn specific_leader_as<T: SpecificLeader>(&self) -> U3vResult<T> {
         T::from_bytes(self.raw_specfic_leader)
     }
 
@@ -130,7 +130,7 @@ impl<'a> Leader<'a> {
         self.block_id
     }
 
-    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> Result<()> {
+    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> U3vResult<()> {
         let magic: u32 = cursor.read_bytes_le()?;
         if magic == Self::LEADER_MAGIC {
             Ok(())
@@ -143,7 +143,7 @@ impl<'a> Leader<'a> {
 /// Types that are specific leader.
 pub trait SpecificLeader {
     /// Construct Specific leader from bytes.
-    fn from_bytes(buf: &[u8]) -> Result<Self>
+    fn from_bytes(buf: &[u8]) -> U3vResult<Self>
     where
         Self: Sized;
 }
@@ -221,7 +221,7 @@ impl ImageLeader {
 }
 
 impl SpecificLeader for ImageLeader {
-    fn from_bytes(buf: &[u8]) -> Result<Self> {
+    fn from_bytes(buf: &[u8]) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf);
         let timestamp = cursor.read_bytes_le()?;
         let pixel_format = cursor
@@ -309,7 +309,7 @@ impl ImageExtendedChunkLeader {
 }
 
 impl SpecificLeader for ImageExtendedChunkLeader {
-    fn from_bytes(buf: &[u8]) -> Result<Self> {
+    fn from_bytes(buf: &[u8]) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf);
         let timestamp = cursor.read_bytes_le()?;
         let pixel_format = cursor
@@ -338,7 +338,7 @@ impl SpecificLeader for ImageExtendedChunkLeader {
 impl TryFrom<u16> for PayloadType {
     type Error = U3vError;
 
-    fn try_from(val: u16) -> Result<Self> {
+    fn try_from(val: u16) -> U3vResult<Self> {
         match val {
             0x0001 => Ok(PayloadType::Image),
             0x4001 => Ok(PayloadType::ImageExtendedChunk),
@@ -368,7 +368,7 @@ impl ChunkLeader {
 }
 
 impl SpecificLeader for ChunkLeader {
-    fn from_bytes(buf: &[u8]) -> Result<Self> {
+    fn from_bytes(buf: &[u8]) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf);
         let timestamp = cursor.read_bytes_le()?;
 
@@ -391,7 +391,7 @@ impl<'a> Trailer<'a> {
     const TRAILER_MAGIC: u32 = 0x5456_3355;
 
     /// Parse bytes as Leader.
-    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> Result<Self> {
+    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf.as_ref());
 
         Self::parse_prefix(&mut cursor)?;
@@ -414,7 +414,7 @@ impl<'a> Trailer<'a> {
     }
 
     /// Return a specific part of trailer.
-    pub fn specific_trailer_as<T: SpecificTrailer>(&self) -> Result<T> {
+    pub fn specific_trailer_as<T: SpecificTrailer>(&self) -> U3vResult<T> {
         T::from_bytes(self.raw_specfic_trailer)
     }
 
@@ -443,7 +443,7 @@ impl<'a> Trailer<'a> {
         self.valid_payload_size
     }
 
-    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> Result<()> {
+    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> U3vResult<()> {
         let magic: u32 = cursor.read_bytes_le()?;
         if magic == Self::TRAILER_MAGIC {
             Ok(())
@@ -473,7 +473,7 @@ impl ImageTrailer {
 }
 
 impl SpecificTrailer for ImageTrailer {
-    fn from_bytes(mut buf: &[u8]) -> Result<Self> {
+    fn from_bytes(mut buf: &[u8]) -> U3vResult<Self> {
         let actual_height = buf.read_bytes_le()?;
         Ok(Self { actual_height })
     }
@@ -508,7 +508,7 @@ impl ImageExtendedChunkTrailer {
 }
 
 impl SpecificTrailer for ImageExtendedChunkTrailer {
-    fn from_bytes(mut buf: &[u8]) -> Result<Self> {
+    fn from_bytes(mut buf: &[u8]) -> U3vResult<Self> {
         let actual_height = buf.read_bytes_le()?;
         let chunk_layout_id = buf.read_bytes_le()?;
         Ok(Self {
@@ -537,7 +537,7 @@ impl ChunkTrailer {
 }
 
 impl SpecificTrailer for ChunkTrailer {
-    fn from_bytes(mut buf: &[u8]) -> Result<Self> {
+    fn from_bytes(mut buf: &[u8]) -> U3vResult<Self> {
         let chunk_layout_id = buf.read_bytes_le()?;
         Ok(Self { chunk_layout_id })
     }
@@ -546,7 +546,7 @@ impl SpecificTrailer for ChunkTrailer {
 /// Types that are specific trailer.
 pub trait SpecificTrailer {
     /// Construct Specific trailer from bytes.
-    fn from_bytes(buf: &[u8]) -> Result<Self>
+    fn from_bytes(buf: &[u8]) -> U3vResult<Self>
     where
         Self: Sized;
 }
@@ -567,7 +567,7 @@ pub enum PayloadStatus {
 impl TryFrom<u16> for PayloadStatus {
     type Error = U3vError;
 
-    fn try_from(val: u16) -> Result<Self> {
+    fn try_from(val: u16) -> U3vResult<Self> {
         match val {
             0x0000 => Ok(PayloadStatus::Success),
             0xA100 => Ok(PayloadStatus::DataDiscarded),
