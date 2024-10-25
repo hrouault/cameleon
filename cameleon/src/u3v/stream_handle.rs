@@ -5,7 +5,7 @@
 //! This module contains low level streaming implementation for `U3V` device.
 
 use crate::{
-    camera::PayloadStream,
+    camera::StreamInterface,
     payload::{ImageInfo, Payload, PayloadType},
     ControlError, ControlResult, DeviceControl, StreamError, StreamResult,
 };
@@ -13,10 +13,17 @@ use cameleon_device::u3v::{
     self,
     protocol::stream::{self as u3v_stream, Leader, Trailer},
 };
-use futures_lite::{stream, Stream};
+use futures_lite::Stream;
 use nusb::transfer::{Queue, RequestBuffer};
-use std::{sync::mpsc::Receiver, time::Duration};
-use tracing::{error, info};
+use pin_project_lite::pin_project;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::mpsc::Receiver,
+    task::{ready, Context, Poll},
+    time::Duration,
+};
+use tracing::{debug, error, info};
 
 use super::register_map::Abrm;
 
@@ -37,7 +44,7 @@ impl StreamHandle {
     }
 }
 
-impl PayloadStream for StreamHandle {
+impl StreamInterface for StreamHandle {
     fn open(&mut self) -> StreamResult<()> {
         self.stream_channel.open().map_err(|e| {
             error!(?e);
@@ -47,10 +54,10 @@ impl PayloadStream for StreamHandle {
 
     /// Get an async stream that return a stream of payload results
     fn start_streaming(
-        &mut self,
+        &self,
         ctrl: &mut dyn DeviceControl,
         payload_rx: Receiver<Vec<u8>>,
-    ) -> StreamResult<impl Stream<Item = StreamResult<Payload>>> {
+    ) -> StreamResult<PayloadStream> {
         let params = StreamParams::from_control(ctrl).map_err(StreamError::StreamParams)?;
 
         let queue = self
@@ -60,33 +67,28 @@ impl PayloadStream for StreamHandle {
             .ok_or_else(|| StreamError::NoInterface)?
             .bulk_in_queue(self.stream_channel.iface_info.bulk_in_ep);
 
-        let stream_loop = StreamingLoop {
-            params,
-            payload_rx,
-            queue,
-            leader_buf: None,
-            trailer_buf: None,
-            final1_buf: None,
-            final2_buf: None,
-            payload_bufs: vec![vec![]],
-            pic_buf: None,
-        };
-
-        Ok(stream::unfold(stream_loop, |mut stream| async move {
-            let payload = stream.next_payload().await;
-            Some((payload, stream))
-        }))
+        Ok(PayloadStream {
+            state: PayloadStreamState::Value {
+                value: PayloadStreamInner {
+                    params,
+                    payload_rx,
+                    queue,
+                    leader_buf: None,
+                    trailer_buf: None,
+                    final1_buf: None,
+                    final2_buf: None,
+                    payload_bufs: vec![vec![]],
+                    pic_buf: None,
+                },
+            },
+        })
     }
 }
 
-struct StreamingLoop {
-    /// Parameters for streaming.
+struct PayloadStreamInner {
     params: StreamParams,
-
     payload_rx: Receiver<Vec<u8>>,
-
     queue: Queue<RequestBuffer>,
-
     leader_buf: Option<Vec<u8>>,
     trailer_buf: Option<Vec<u8>>,
     final1_buf: Option<Vec<u8>>,
@@ -95,7 +97,7 @@ struct StreamingLoop {
     pic_buf: Option<Vec<u8>>,
 }
 
-impl StreamingLoop {
+impl PayloadStreamInner {
     fn submit_leader(&mut self) -> StreamResult<()> {
         let req_buf = if let Some(buf) = self.leader_buf.take() {
             RequestBuffer::reuse(buf, self.params.leader_size)
@@ -103,6 +105,8 @@ impl StreamingLoop {
             RequestBuffer::new(self.params.leader_size)
         };
         self.queue.submit(req_buf);
+
+        debug!("Leader size: {}", self.params.leader_size);
 
         Ok(())
     }
@@ -116,6 +120,7 @@ impl StreamingLoop {
                 RequestBuffer::new(payload_size)
             };
             self.queue.submit(req_buf);
+            debug!("Payload size: {}", payload_size);
         }
 
         if self.params.payload_final1_size != 0 {
@@ -126,6 +131,7 @@ impl StreamingLoop {
             };
             self.queue.submit(req_buf);
         }
+        debug!("final1 size: {}", self.params.payload_final1_size);
         if self.params.payload_final2_size != 0 {
             let req_buf = if let Some(buf) = self.final2_buf.take() {
                 RequestBuffer::reuse(buf, self.params.payload_final2_size)
@@ -134,6 +140,7 @@ impl StreamingLoop {
             };
             self.queue.submit(req_buf);
         }
+        debug!("final2 size: {}", self.params.payload_final2_size);
 
         Ok(())
     }
@@ -145,6 +152,7 @@ impl StreamingLoop {
             RequestBuffer::new(self.params.trailer_size)
         };
         self.queue.submit(req_buf);
+        debug!("trailer size: {}", self.params.trailer_size);
 
         Ok(())
     }
@@ -242,6 +250,72 @@ impl StreamingLoop {
             trailer,
         }
         .build()
+    }
+}
+
+pin_project! {
+    /// PayloadStream structure that implement the Stream trait
+    pub struct PayloadStream {
+        #[pin]
+        state: PayloadStreamState,
+    }
+}
+
+type BoxedFut =
+    Pin<Box<dyn std::future::Future<Output = (StreamResult<Payload>, PayloadStreamInner)>>>;
+pin_project! {
+    #[project = PayloadStreamStateProj]
+    #[project_replace = PayloadStreamStateProjReplace]
+    enum PayloadStreamState {
+        Value {
+            value: PayloadStreamInner,
+        },
+        Future {
+            #[pin]
+            future: BoxedFut,
+        },
+        Empty,
+    }
+}
+
+impl PayloadStreamState {
+    pub(crate) fn project_future(self: Pin<&mut Self>) -> Option<Pin<&mut BoxedFut>> {
+        match self.project() {
+            PayloadStreamStateProj::Future { future } => Some(future),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn take_value(self: Pin<&mut Self>) -> Option<PayloadStreamInner> {
+        match &*self {
+            Self::Value { .. } => match self.project_replace(Self::Empty) {
+                PayloadStreamStateProjReplace::Value { value } => Some(value),
+                _ => unreachable!(),
+            },
+            _ => None,
+        }
+    }
+}
+
+impl Stream for PayloadStream {
+    type Item = StreamResult<Payload>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        if let Some(mut state) = this.state.as_mut().take_value() {
+            this.state.set(PayloadStreamState::Future {
+                future: Box::pin(async move { (state.next_payload().await, state) }),
+            });
+        }
+
+        let step = match this.state.as_mut().project_future() {
+            Some(fut) => ready!(fut.poll(cx)),
+            None => panic!("Unfold must not be polled after it returned `Poll::Ready(None)`"),
+        };
+
+        this.state.set(PayloadStreamState::Value { value: step.1 });
+        Poll::Ready(Some(step.0))
     }
 }
 

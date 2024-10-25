@@ -30,6 +30,7 @@ futures-lite = "2.3.0"
 nusb = "0.1.10"
 futures-core = "0.3.31"
 futures-time = "3.0.0"
+pin-project-lite = "0.2.15"
 
 [dev-dependencies]
 trybuild = "1.0.42"

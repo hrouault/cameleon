@@ -61,9 +61,8 @@ use super::{
     genapi::{DefaultGenApiCtxt, FromXml, GenApiCtxt, ParamsCtxt},
     CameleonError, CameleonResult, ControlResult, StreamResult,
 };
-use crate::payload::Payload;
+use crate::u3v::stream_handle::PayloadStream;
 use auto_impl::auto_impl;
-use futures_lite::Stream;
 use std::sync::mpsc::Receiver;
 use tracing::info;
 
@@ -167,7 +166,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     pub fn open(&mut self) -> CameleonResult<()>
     where
         Ctrl: DeviceControl,
-        Strm: PayloadStream,
+        Strm: StreamInterface,
     {
         info!("try opening the device");
         self.ctrl.open()?;
@@ -201,7 +200,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     pub fn close(&mut self) -> CameleonResult<()>
     where
         Ctrl: DeviceControl,
-        Strm: PayloadStream,
+        Strm: StreamInterface,
         Ctxt: GenApiCtxt,
     {
         info!("try closing the device");
@@ -240,7 +239,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     pub fn load_context(&mut self) -> CameleonResult<String>
     where
         Ctrl: DeviceControl,
-        Strm: PayloadStream,
+        Strm: StreamInterface,
         Ctxt: GenApiCtxt + FromXml,
     {
         let xml = self.ctrl.genapi()?;
@@ -292,10 +291,10 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     pub fn start_streaming(
         &mut self,
         payload_rx: Receiver<Vec<u8>>,
-    ) -> CameleonResult<impl Stream<Item = StreamResult<Payload>> + '_>
+    ) -> CameleonResult<PayloadStream>
     where
         Ctrl: DeviceControl,
-        Strm: PayloadStream,
+        Strm: StreamInterface,
         Ctxt: GenApiCtxt,
     {
         info!("try starting streaming");
@@ -341,7 +340,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     pub fn stop_streaming(&mut self) -> CameleonResult<()>
     where
         Ctrl: DeviceControl,
-        Strm: PayloadStream,
+        Strm: StreamInterface,
         Ctxt: GenApiCtxt,
     {
         info!("try stopping streaming");
@@ -396,7 +395,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     pub fn params_ctxt(&mut self) -> CameleonResult<ParamsCtxt<&mut Ctrl, &mut Ctxt>>
     where
         Ctrl: DeviceControl,
-        Strm: PayloadStream,
+        Strm: StreamInterface,
         Ctxt: GenApiCtxt,
     {
         if let Some(ctxt) = self.ctxt.as_mut() {
@@ -538,14 +537,14 @@ pub trait DeviceControl {
 
 /// This trait provides streaming capability.
 // #[auto_impl(&mut, Box)]
-pub trait PayloadStream {
+pub trait StreamInterface {
     /// Opens the handle.
     fn open(&mut self) -> StreamResult<()>;
 
     /// Starts streaming.
     fn start_streaming(
-        &mut self,
+        &self,
         ctrl: &mut dyn DeviceControl,
         payload_rx: Receiver<Vec<u8>>,
-    ) -> StreamResult<impl Stream<Item = StreamResult<Payload>>>;
+    ) -> StreamResult<PayloadStream>;
 }

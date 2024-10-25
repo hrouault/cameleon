@@ -149,7 +149,7 @@ pub mod payload;
 pub mod u3v;
 
 use cameleon_device::u3v::U3vError;
-pub use camera::{Camera, CameraInfo, DeviceControl, PayloadStream};
+pub use camera::{Camera, CameraInfo, DeviceControl, StreamInterface};
 
 use std::{borrow::Cow, num::TryFromIntError};
 
