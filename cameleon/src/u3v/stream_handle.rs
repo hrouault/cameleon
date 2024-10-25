@@ -262,7 +262,7 @@ pin_project! {
 }
 
 type BoxedFut =
-    Pin<Box<dyn std::future::Future<Output = (StreamResult<Payload>, PayloadStreamInner)>>>;
+    Pin<Box<dyn std::future::Future<Output = (StreamResult<Payload>, PayloadStreamInner)> + Send>>;
 pin_project! {
     #[project = PayloadStreamStateProj]
     #[project_replace = PayloadStreamStateProjReplace]
