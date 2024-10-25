@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use crate::u3v::{Result, U3vError};
+use crate::u3v::{U3vError, U3vResult};
 use nusb::{
     transfer::{RequestBuffer, TransferFuture},
     Interface,
@@ -15,7 +15,7 @@ pub struct ControlChannel {
 }
 
 impl ControlChannel {
-    pub fn open(&mut self) -> Result<()> {
+    pub fn open(&mut self) -> U3vResult<()> {
         if self.iface.is_none() {
             self.iface = Some(self.device.claim_interface(self.iface_info.iface_number)?);
         }
@@ -23,7 +23,7 @@ impl ControlChannel {
         Ok(())
     }
 
-    pub fn send(&self, buf: Vec<u8>) -> Result<TransferFuture<Vec<u8>>> {
+    pub fn send(&self, buf: Vec<u8>) -> U3vResult<TransferFuture<Vec<u8>>> {
         if let Some(iface) = &self.iface {
             Ok(iface.bulk_out(self.iface_info.bulk_out_ep, buf))
         } else {
@@ -31,7 +31,7 @@ impl ControlChannel {
         }
     }
 
-    pub fn recv(&self, buf: RequestBuffer) -> Result<TransferFuture<RequestBuffer>> {
+    pub fn recv(&self, buf: RequestBuffer) -> U3vResult<TransferFuture<RequestBuffer>> {
         if let Some(iface) = &self.iface {
             Ok(iface.bulk_in(self.iface_info.bulk_in_ep, buf))
         } else {
@@ -39,7 +39,7 @@ impl ControlChannel {
         }
     }
 
-    pub fn clear_halt(&mut self) -> Result<()> {
+    pub fn clear_halt(&mut self) -> U3vResult<()> {
         if let Some(iface) = &self.iface {
             iface.clear_halt(self.iface_info.bulk_in_ep)?;
             iface.clear_halt(self.iface_info.bulk_out_ep)?;
@@ -63,28 +63,24 @@ pub struct ReceiveChannel {
 }
 
 impl ReceiveChannel {
-    pub fn open(&mut self) -> Result<()> {
+    pub fn open(&mut self) -> U3vResult<()> {
         if self.iface.is_none() {
             self.iface = Some(self.device.claim_interface(self.iface_info.iface_number)?);
         }
 
         Ok(())
     }
-    //
-    //     pub fn close(&mut self) -> Result<()> {
-    //         if self.is_opened() {
-    //             self.device_handle
-    //                 .release_interface(self.iface_info.iface_number)?;
-    //         }
-    //
-    //         self.is_opened = false;
-    //         Ok(())
-    //     }
-    //
-    //     #[must_use]
-    //     pub fn is_opened(&self) -> bool {
-    //         self.is_opened
-    //     }
+
+    pub fn close(&mut self) {
+        if self.iface.is_some() {
+            self.iface = None;
+        }
+    }
+
+    #[must_use]
+    pub fn is_opened(&self) -> bool {
+        self.iface.is_some()
+    }
     //
     //     pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
     //         Ok(self
@@ -93,7 +89,21 @@ impl ReceiveChannel {
     //     }
     //
     //     pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
-    //         set_halt(&self.device_handle, self.iface_info.bulk_in_ep, timeout)?;
+    //     let request = 0x03; // SET_FEATURE.
+    //     let value = 0x00; // ENDPOINT_HALT.
+    //     let buf = vec![]; // NO DATA.
+    //
+    //     let interface = handle.claim_interface(0).unwrap();
+    //     let result = block_on(interface.control_out(ControlOut {
+    //         control_type: ControlType::Vendor,
+    //         recipient: Recipient::Endpoint,
+    //         request,
+    //         value,
+    //         index: endpoint_number as u16,
+    //         data: &buf,
+    //     }))?;
+    //
+    //     Ok(())
     //
     //         Ok(())
     //     }
@@ -124,21 +134,3 @@ pub struct ReceiveIfaceInfo {
     pub iface_number: u8,
     pub bulk_in_ep: u8,
 }
-
-// fn set_halt(handle: &nusb::Device, endpoint_number: u8, timeout: time::Duration) -> Result<()> {
-//     let request = 0x03; // SET_FEATURE.
-//     let value = 0x00; // ENDPOINT_HALT.
-//     let buf = vec![]; // NO DATA.
-//
-//     let interface = handle.claim_interface(0).unwrap();
-//     let result = block_on(interface.control_out(ControlOut {
-//         control_type: ControlType::Vendor,
-//         recipient: Recipient::Endpoint,
-//         request,
-//         value,
-//         index: endpoint_number as u16,
-//         data: &buf,
-//     }))?;
-//
-//     Ok(())
-// }

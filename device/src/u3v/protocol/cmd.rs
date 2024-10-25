@@ -6,7 +6,7 @@ use std::{convert::TryInto, io::Write};
 
 use cameleon_impl::bytes_io::WriteBytes;
 
-use crate::u3v::{Result, U3vError};
+use crate::u3v::{U3vError, U3vResult};
 
 #[derive(Debug)]
 pub struct CommandPacket<T> {
@@ -26,7 +26,7 @@ where
     // Length of pending ack SCD. This SCD can be returned with any command.
     const MINIMUM_ACK_SCD_LENGTH: u16 = 4;
 
-    pub fn serialize(&self, mut buf: impl Write) -> Result<()> {
+    pub fn serialize(&self, mut buf: impl Write) -> U3vResult<()> {
         buf.write_bytes_le(Self::PREFIX_MAGIC)?;
         self.ccd.serialize(&mut buf)?;
         self.scd.serialize(&mut buf)?;
@@ -112,7 +112,7 @@ impl ReadMem {
     }
 
     /// Split into multiple [`ReadMem`] chunks so that all corresponding ack length fit into `ack_len`.
-    pub fn chunks(&self, ack_len: usize) -> Result<ReadMemChunks> {
+    pub fn chunks(&self, ack_len: usize) -> U3vResult<ReadMemChunks> {
         let ack_header_length = CommandPacket::<ReadMem>::ACK_HEADER_LENGTH;
         if ack_len <= ack_header_length {
             let msg = format!(
@@ -184,7 +184,7 @@ impl<'a> std::iter::Iterator for WriteMemChunks<'a> {
 }
 
 impl<'a> WriteMem<'a> {
-    pub fn new(address: u64, data: &'a [u8]) -> Result<Self> {
+    pub fn new(address: u64, data: &'a [u8]) -> U3vResult<Self> {
         let data_len = into_scd_len(data.len())?;
         let len = into_scd_len(data.len() + 8)?;
 
@@ -203,7 +203,7 @@ impl<'a> WriteMem<'a> {
     }
 
     /// Split into multiple [`WriteMem`] chunks so that all commands resulting from chunks fit into `cmd_len`.
-    pub fn chunks(&self, cmd_len: usize) -> Result<WriteMemChunks<'a>> {
+    pub fn chunks(&self, cmd_len: usize) -> U3vResult<WriteMemChunks<'a>> {
         let cmd_header_len = CommandPacket::<WriteMem>::header_len() + 8;
         if cmd_len <= cmd_header_len {
             let msg = format!(
@@ -231,7 +231,7 @@ pub struct ReadMemStacked {
 }
 
 impl ReadMemStacked {
-    pub fn new(entries: Vec<ReadMem>) -> Result<Self> {
+    pub fn new(entries: Vec<ReadMem>) -> U3vResult<Self> {
         let len = Self::len(&entries)?;
         let ack_scd_len = Self::ack_scd_len(&entries)?;
 
@@ -242,12 +242,12 @@ impl ReadMemStacked {
         })
     }
 
-    fn len(regs: &[ReadMem]) -> Result<u16> {
+    fn len(regs: &[ReadMem]) -> U3vResult<u16> {
         let len = regs.iter().fold(0, |acc, reg| acc + reg.scd_len() as usize);
         into_scd_len(len)
     }
 
-    fn ack_scd_len(entries: &[ReadMem]) -> Result<u16> {
+    fn ack_scd_len(entries: &[ReadMem]) -> U3vResult<u16> {
         let mut acc: u16 = 0;
         for ent in entries {
             acc = acc.checked_add(ent.read_length).ok_or_else(|| {
@@ -267,7 +267,7 @@ pub struct WriteMemStacked<'a> {
 }
 
 impl<'a> WriteMemStacked<'a> {
-    pub fn new(entries: Vec<WriteMem<'a>>) -> Result<Self> {
+    pub fn new(entries: Vec<WriteMem<'a>>) -> U3vResult<Self> {
         let len = Self::len(&entries)?;
         let ack_scd_len = entries.len() as u16 * 4;
         Ok(Self {
@@ -277,7 +277,7 @@ impl<'a> WriteMemStacked<'a> {
         })
     }
 
-    fn len(entries: &[WriteMem<'a>]) -> Result<u16> {
+    fn len(entries: &[WriteMem<'a>]) -> U3vResult<u16> {
         let len = entries
             .iter()
             .fold(0, |acc, cmd| acc + 12 + cmd.data_len as usize);
@@ -327,7 +327,7 @@ impl CommandCcd {
         Self::new(scd.flag(), scd.scd_kind(), scd.scd_len(), request_id)
     }
 
-    fn serialize(&self, mut buf: impl Write) -> Result<()> {
+    fn serialize(&self, mut buf: impl Write) -> U3vResult<()> {
         self.flag.serialize(&mut buf)?;
         self.scd_kind.serialize(&mut buf)?;
         buf.write_bytes_le(self.scd_len)?;
@@ -350,7 +350,7 @@ pub enum CommandFlag {
 }
 
 impl CommandFlag {
-    fn serialize(self, mut buf: impl Write) -> Result<()> {
+    fn serialize(self, mut buf: impl Write) -> U3vResult<()> {
         let flag_id: u16 = match self {
             Self::RequestAck => 1 << 14,
             Self::CommandResend => 1 << 15,
@@ -370,7 +370,7 @@ pub enum ScdKind {
 }
 
 impl ScdKind {
-    fn serialize(self, mut buf: impl Write) -> Result<()> {
+    fn serialize(self, mut buf: impl Write) -> U3vResult<()> {
         let kind_id: u16 = match self {
             Self::ReadMem => 0x0800,
             Self::WriteMem => 0x0802,
@@ -390,7 +390,7 @@ pub trait CommandScd: std::fmt::Debug + Sized {
 
     fn scd_len(&self) -> u16;
 
-    fn serialize(&self, buf: impl Write) -> Result<()>;
+    fn serialize(&self, buf: impl Write) -> U3vResult<()>;
 
     fn ack_scd_len(&self) -> u16;
 
@@ -413,7 +413,7 @@ impl CommandScd for ReadMem {
         12
     }
 
-    fn serialize(&self, mut buf: impl Write) -> Result<()> {
+    fn serialize(&self, mut buf: impl Write) -> U3vResult<()> {
         buf.write_bytes_le(self.address)?;
         buf.write_bytes_le(0_u16)?; // 2bytes reserved.
         buf.write_bytes_le(self.read_length)?;
@@ -438,7 +438,7 @@ impl<'a> CommandScd for WriteMem<'a> {
         self.len
     }
 
-    fn serialize(&self, mut buf: impl Write) -> Result<()> {
+    fn serialize(&self, mut buf: impl Write) -> U3vResult<()> {
         buf.write_bytes_le(self.address)?;
         buf.write_all(self.data)?;
         Ok(())
@@ -463,7 +463,7 @@ impl CommandScd for ReadMemStacked {
         self.len
     }
 
-    fn serialize(&self, mut buf: impl Write) -> Result<()> {
+    fn serialize(&self, mut buf: impl Write) -> U3vResult<()> {
         for ent in &self.entries {
             ent.serialize(&mut buf)?;
         }
@@ -489,7 +489,7 @@ impl<'a> CommandScd for WriteMemStacked<'a> {
         self.len
     }
 
-    fn serialize(&self, mut buf: impl Write) -> Result<()> {
+    fn serialize(&self, mut buf: impl Write) -> U3vResult<()> {
         for ent in &self.entries {
             buf.write_bytes_le(ent.address)?;
             buf.write_bytes_le(0_u16)?; // 2bytes reserved.
@@ -504,7 +504,7 @@ impl<'a> CommandScd for WriteMemStacked<'a> {
     }
 }
 
-fn into_scd_len(len: usize) -> Result<u16> {
+fn into_scd_len(len: usize) -> U3vResult<u16> {
     len.try_into()
         .map_err(|_| U3vError::InvalidPacket("scd length must be less than u16::MAX".into()))
 }

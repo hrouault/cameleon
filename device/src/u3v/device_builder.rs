@@ -6,7 +6,7 @@ use super::{
     channel::{ControlIfaceInfo, ReceiveIfaceInfo},
     device::Device,
 };
-use crate::u3v::{BusSpeed, DeviceInfo, Result, U3vError};
+use crate::u3v::{BusSpeed, DeviceInfo, U3vError, U3vResult};
 use log::debug;
 use nusb::{
     descriptors::{self, language_id::US_ENGLISH, Descriptor},
@@ -25,7 +25,7 @@ const IAD_FUNCTION_PROTOCOL: u8 = 0x00;
 
 const USB3V_SUBCLASS: u8 = 0x05;
 
-pub fn enumerate_devices() -> Result<Vec<Device>> {
+pub fn enumerate_devices() -> U3vResult<Vec<Device>> {
     let builders = nusb::list_devices()?.filter_map(|di| DeviceBuilder::new(di).ok().flatten());
     Ok(builders
         .filter_map(|builder| builder.build().ok())
@@ -40,7 +40,7 @@ struct DeviceBuilder {
 }
 
 impl DeviceBuilder {
-    fn new(di: nusb::DeviceInfo) -> Result<Option<Self>> {
+    fn new(di: nusb::DeviceInfo) -> U3vResult<Option<Self>> {
         if di.class() == MISCELLANEOUS_CLASS
             && di.subclass() == DEVICE_SUBCLASS
             && di.protocol() == DEVICE_PROTOCOL
@@ -58,7 +58,7 @@ impl DeviceBuilder {
         Ok(None)
     }
 
-    fn build(self) -> Result<Device> {
+    fn build(self) -> U3vResult<Device> {
         // Skip interfaces while control interface is appeared.
         let mut interfaces = self
             .di
@@ -130,7 +130,7 @@ impl DeviceBuilder {
         ))
     }
 
-    fn find_u3v_iad(device: &nusb::Device) -> Result<Option<(Iad, descriptors::Configuration)>> {
+    fn find_u3v_iad(device: &nusb::Device) -> U3vResult<Option<(Iad, descriptors::Configuration)>> {
         for conf in device.configurations() {
             if let Some(u3v_iad) = Self::find_u3v_iad_in_config(device, &conf) {
                 return Ok(Some((u3v_iad, conf)));
@@ -274,7 +274,7 @@ impl DeviceInfoDescriptor {
     const DESCRIPTOR_TYPE: u8 = 0x24;
     const DESCRIPTOR_SUBTYPE: u8 = 0x1;
 
-    fn from_desc(desc: &Descriptor) -> Result<Self> {
+    fn from_desc(desc: &Descriptor) -> U3vResult<Self> {
         let desc_length = desc.descriptor_len();
         let descriptor_type = desc.descriptor_type();
         let descriptor_subtype = desc[2];
@@ -320,7 +320,7 @@ impl DeviceInfoDescriptor {
         })
     }
 
-    fn interpret(&self, channel: &nusb::Device) -> Result<DeviceInfo> {
+    fn interpret(&self, channel: &nusb::Device) -> U3vResult<DeviceInfo> {
         let gencp_version = Version::new(
             self.gencp_version_major.into(),
             self.gencp_version_minor.into(),
@@ -412,7 +412,7 @@ impl DeviceInfoDescriptor {
 impl ControlIfaceInfo {
     const CONTROL_IFACE_PROTOCOL: u8 = 0x00;
 
-    fn new(iface: &nusb::Interface) -> Result<Self> {
+    fn new(iface: &nusb::Interface) -> U3vResult<Self> {
         let iface_number = iface.interface_number();
         let iface_desc = iface.descriptors().next().ok_or(U3vError::InvalidDevice)?;
 

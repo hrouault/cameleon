@@ -41,4 +41,4 @@ pub enum U3vError {
     InvalidDevice,
 }
 
-pub type Result<T> = std::result::Result<T, U3vError>;
+pub type U3vResult<T> = std::result::Result<T, U3vError>;

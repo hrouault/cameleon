@@ -6,7 +6,7 @@ use std::io::{self, Cursor};
 
 use cameleon_impl::bytes_io::ReadBytes;
 
-use crate::u3v::{Result, U3vError};
+use crate::u3v::{U3vError, U3vResult};
 
 pub struct EventPacket<'a> {
     ccd: EventCcd,
@@ -16,7 +16,7 @@ pub struct EventPacket<'a> {
 impl<'a> EventPacket<'a> {
     const PREFIX_MAGIC: u32 = 0x4556_3355;
 
-    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> Result<Self> {
+    pub fn parse(buf: &'a (impl AsRef<[u8]> + ?Sized)) -> U3vResult<Self> {
         let mut cursor = Cursor::new(buf.as_ref());
 
         Self::parse_prefix(&mut cursor)?;
@@ -33,7 +33,7 @@ impl<'a> EventPacket<'a> {
         self.ccd.request_id
     }
 
-    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> Result<()> {
+    fn parse_prefix(cursor: &mut Cursor<&[u8]>) -> U3vResult<()> {
         let magic: u32 = cursor.read_bytes_le()?;
         if magic == Self::PREFIX_MAGIC {
             Ok(())
@@ -55,7 +55,7 @@ struct EventCcd {
 impl EventCcd {
     const EVENT_COMMAND_ID: u16 = 0x0c00;
 
-    fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+    fn parse(cursor: &mut Cursor<&[u8]>) -> U3vResult<Self> {
         let flag = cursor.read_bytes_le()?;
         let command_id = cursor.read_bytes_le()?;
         if command_id != Self::EVENT_COMMAND_ID {
@@ -83,7 +83,7 @@ pub struct EventScd<'a> {
 }
 
 impl<'a> EventScd<'a> {
-    fn parse(cursor: &mut Cursor<&'a [u8]>, ccd: &EventCcd) -> Result<Vec<Self>> {
+    fn parse(cursor: &mut Cursor<&'a [u8]>, ccd: &EventCcd) -> U3vResult<Vec<Self>> {
         fn read_and_seek<'a>(cursor: &mut io::Cursor<&'a [u8]>, len: u16) -> io::Result<&'a [u8]> {
             use std::io::Seek;
             let current_pos = cursor.position() as usize;

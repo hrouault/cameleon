@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use crate::u3v::{DeviceInfo, Result};
+use crate::u3v::{DeviceInfo, U3vResult};
 
 use super::channel::{ControlChannel, ControlIfaceInfo, ReceiveChannel, ReceiveIfaceInfo};
 
@@ -21,14 +21,14 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn control_channel(&self) -> Result<ControlChannel> {
+    pub fn control_channel(&self) -> U3vResult<ControlChannel> {
         Ok(ControlChannel::new(
             self.device.clone(),
             self.ctrl_iface_info.clone(),
         ))
     }
 
-    pub fn event_channel(&self) -> Result<Option<ReceiveChannel>> {
+    pub fn event_channel(&self) -> U3vResult<Option<ReceiveChannel>> {
         match &self.event_iface_info {
             Some(iface_info) => Ok(Some(ReceiveChannel::new(
                 self.device.clone(),
@@ -38,7 +38,7 @@ impl Device {
         }
     }
 
-    pub fn stream_channel(&self) -> Result<Option<ReceiveChannel>> {
+    pub fn stream_channel(&self) -> U3vResult<Option<ReceiveChannel>> {
         match &self.stream_iface_info {
             Some(iface_info) => Ok(Some(ReceiveChannel::new(
                 self.device.clone(),

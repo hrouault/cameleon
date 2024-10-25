@@ -250,6 +250,14 @@ pub enum StreamError {
     #[error("nusb transfer cancelled")]
     Cancelled,
 
+    /// Cannot get the streaming parameters
+    #[error("Cannot get the streaming parameters")]
+    StreamParams(#[from] ControlError),
+
+    /// The streaming interface is closed
+    #[error("The streaming interface is closed")]
+    NoInterface,
+
     /// Failed to receive [`payload::Payload`].
     #[error("nusb transfer error: {0}")]
     TransferError(#[from] nusb::transfer::TransferError),
