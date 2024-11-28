@@ -26,7 +26,10 @@ const IAD_FUNCTION_PROTOCOL: u8 = 0x00;
 const USB3V_SUBCLASS: u8 = 0x05;
 
 pub fn enumerate_devices() -> U3vResult<Vec<Device>> {
-    let builders = nusb::list_devices()?.filter_map(|di| DeviceBuilder::new(di).ok().flatten());
+    let builders = nusb::list_devices()?.filter_map(|di| {
+        debug!("{:?}", di);
+        DeviceBuilder::new(di).ok().flatten()
+    });
     Ok(builders
         .filter_map(|builder| builder.build().ok())
         .collect())
@@ -45,7 +48,9 @@ impl DeviceBuilder {
             && di.subclass() == DEVICE_SUBCLASS
             && di.protocol() == DEVICE_PROTOCOL
         {
+            debug!("Found a camera device, opening it...");
             let device = di.open()?;
+            debug!("Device open...");
             if let Some((iad, _conf_desc)) = Self::find_u3v_iad(&device)? {
                 return Ok(Some(Self {
                     di,
@@ -59,6 +64,7 @@ impl DeviceBuilder {
     }
 
     fn build(self) -> U3vResult<Device> {
+        debug!("Opening the interfaces...");
         // Skip interfaces while control interface is appeared.
         let mut interfaces = self
             .di
@@ -84,19 +90,13 @@ impl DeviceBuilder {
         let device_info = iface_desc
             .filter_map(|iface| DeviceInfoDescriptor::from_desc(&iface).ok())
             .next()
-            .unwrap()
+            .ok_or(U3vError::NoInterface)?
             .interpret(&self.device)?;
 
         // Retrieve event and stream interface information if exists.
         let mut receive_ifaces: Vec<(ReceiveIfaceInfo, ReceiveIfaceKind)> = interfaces
-            .filter_map(|iface| {
-                ReceiveIfaceInfo::new(
-                    &self
-                        .device
-                        .claim_interface(iface.interface_number())
-                        .unwrap(),
-                )
-            })
+            .filter_map(|iface| self.device.claim_interface(iface.interface_number()).ok())
+            .filter_map(|iface| ReceiveIfaceInfo::new(&iface))
             .collect();
 
         if receive_ifaces.len() > 2 {
@@ -153,13 +153,16 @@ impl DeviceBuilder {
         }
 
         for iface_ind in conf.interfaces() {
-            let iface = device
-                .claim_interface(iface_ind.interface_number())
-                .unwrap();
-            for if_desc in iface.descriptors() {
-                if let Some(u3v_iad) = Self::find_u3v_iad_in_ifce(&if_desc) {
-                    return Some(u3v_iad);
+            let iface_res = device.claim_interface(iface_ind.interface_number());
+
+            if let Ok(iface) = iface_res {
+                for if_desc in iface.descriptors() {
+                    if let Some(u3v_iad) = Self::find_u3v_iad_in_ifce(&if_desc) {
+                        return Some(u3v_iad);
+                    }
                 }
+            } else {
+                continue;
             }
         }
 
@@ -473,7 +476,7 @@ impl ReceiveIfaceInfo {
             if desc.num_endpoints() != 1 {
                 return None;
             }
-            let ep = desc.endpoints().next().unwrap();
+            let ep = desc.endpoints().next()?;
             if ep.transfer_type() != EndpointType::Bulk || ep.direction() != Direction::In {
                 return None;
             }
