@@ -83,9 +83,39 @@ impl StreamInterface for StreamHandle {
             },
         })
     }
+
+    /// Get an async stream that return a stream of payload results
+    fn start_generator(
+        &self,
+        ctrl: &mut dyn DeviceControl,
+        payload_rx: Receiver<Vec<u8>>,
+    ) -> StreamResult<PayloadGenerator> {
+        let params = StreamParams::from_control(ctrl).map_err(StreamError::StreamParams)?;
+
+        let queue = self
+            .stream_channel
+            .iface
+            .clone()
+            .ok_or_else(|| StreamError::NoInterface)?
+            .bulk_in_queue(self.stream_channel.iface_info.bulk_in_ep);
+
+        Ok(PayloadGenerator {
+            inner: PayloadStreamInner {
+                params,
+                payload_rx,
+                queue,
+                leader_buf: None,
+                trailer_buf: None,
+                final1_buf: None,
+                final2_buf: None,
+                payload_bufs: vec![vec![]],
+                pic_buf: None,
+            },
+        })
+    }
 }
 
-struct PayloadStreamInner {
+pub(crate) struct PayloadStreamInner {
     params: StreamParams,
     payload_rx: Receiver<Vec<u8>>,
     queue: Queue<RequestBuffer>,
@@ -191,6 +221,11 @@ impl PayloadStreamInner {
         let mut cursor = 0;
         for _i in 0..self.params.payload_count {
             let payload_size = self.params.payload_size;
+            debug!(
+                "Waiting for completion: {}, {} pending transfers",
+                cursor,
+                self.queue.pending()
+            );
             let completion = self.queue.next_complete().await.into_result()?;
             pic_buf[cursor..cursor + payload_size].clone_from_slice(&completion);
             cursor += payload_size;
@@ -198,6 +233,11 @@ impl PayloadStreamInner {
         }
         let final1 = self.params.payload_final1_size;
         if final1 != 0 {
+            debug!(
+                "Waiting for completion: {}, {} pending transfers",
+                cursor,
+                self.queue.pending()
+            );
             let completion = self.queue.next_complete().await.into_result()?;
             pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
             cursor += final1;
@@ -205,6 +245,11 @@ impl PayloadStreamInner {
         }
         let final2 = self.params.payload_final2_size;
         if final2 != 0 {
+            debug!(
+                "Waiting for completion: {}, {} pending transfers",
+                cursor,
+                self.queue.pending()
+            );
             let completion = self.queue.next_complete().await.into_result()?;
             pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
             self.final2_buf = Some(completion);
@@ -214,6 +259,10 @@ impl PayloadStreamInner {
     }
 
     async fn read_trailer(&mut self) -> StreamResult<()> {
+        debug!(
+            "Waiting for completion trailer, {} pending transfers",
+            self.queue.pending()
+        );
         let trailer_buf = self.queue.next_complete().await.into_result()?;
         self.trailer_buf = Some(trailer_buf);
         Ok(())
@@ -231,12 +280,16 @@ impl PayloadStreamInner {
         self.submit_leader()?;
         self.submit_payload()?;
         self.submit_trailer()?;
+        debug!("Submitted all the packets");
 
         // We've submitted the bulk transfers, now wait for them and parse the results
         // parse the leader
         self.read_leader().await?;
+        debug!("Received the leader");
         self.read_payload().await?;
+        debug!("Received the main payload");
         self.read_trailer().await?;
+        debug!("Received all the packets");
         let pic_buf = self.pic_buf.take().ok_or_else(|| StreamError::NoBuffer)?;
 
         let leader = self.parse_leader()?;
@@ -316,6 +369,16 @@ impl Stream for PayloadStream {
 
         this.state.set(PayloadStreamState::Value { value: step.1 });
         Poll::Ready(Some(step.0))
+    }
+}
+
+pub struct PayloadGenerator {
+    inner: PayloadStreamInner,
+}
+
+impl PayloadGenerator {
+    pub async fn next_payload(&mut self) -> StreamResult<Payload> {
+        self.inner.next_payload().await
     }
 }
 

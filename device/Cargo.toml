@@ -20,10 +20,9 @@ log = "0.4.14"
 semver = "1.0.0"
 cfg-if = "1.0.0"
 cameleon-impl = { path = "../impl", version = "0.1.14" }
-
-nusb = "0.1.10"
 futures-lite = "2.3.0"
 tracing = "0.1.40"
+nusb = "0.1.12"
 
 [dev-dependencies]
 trybuild = "1.0.42"

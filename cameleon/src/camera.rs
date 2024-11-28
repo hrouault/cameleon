@@ -61,9 +61,9 @@ use super::{
     genapi::{DefaultGenApiCtxt, FromXml, GenApiCtxt, ParamsCtxt},
     CameleonError, CameleonResult, ControlResult, StreamResult,
 };
-use crate::u3v::stream_handle::PayloadStream;
+use crate::u3v::stream_handle::{PayloadGenerator, PayloadStream};
 use auto_impl::auto_impl;
-use std::sync::mpsc::Receiver;
+use std::{fs, sync::mpsc::Receiver};
 use tracing::info;
 
 /// Provides easy-to-use access to a `GenICam` compatible camera.
@@ -243,6 +243,7 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         Ctxt: GenApiCtxt + FromXml,
     {
         let xml = self.ctrl.genapi()?;
+        fs::write("camera.xml", &xml).expect("Unable to write file");
         self.ctxt = Some(Ctxt::from_xml(&xml)?);
         Ok(xml)
     }
@@ -305,6 +306,28 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         expect_node!(&ctxt, "TLParamsLocked", as_integer).set_value(&mut ctxt, 1)?;
         expect_node!(&ctxt, "AcquisitionStart", as_command).execute(&mut ctxt)?;
         Ok(self.strm.start_streaming(&mut self.ctrl, payload_rx)?)
+    }
+
+    #[tracing::instrument(skip(self, payload_rx),
+                          level = "info",
+                          fields(camera = ?self.info()))]
+    pub fn start_generator(
+        &mut self,
+        payload_rx: Receiver<Vec<u8>>,
+    ) -> CameleonResult<PayloadGenerator>
+    where
+        Ctrl: DeviceControl,
+        Strm: StreamInterface,
+        Ctxt: GenApiCtxt,
+    {
+        info!("try starting streaming");
+
+        // Enable streaimng.
+        self.ctrl.enable_streaming()?;
+        let mut ctxt = self.params_ctxt()?;
+        expect_node!(&ctxt, "TLParamsLocked", as_integer).set_value(&mut ctxt, 1)?;
+        expect_node!(&ctxt, "AcquisitionStart", as_command).execute(&mut ctxt)?;
+        Ok(self.strm.start_generator(&mut self.ctrl, payload_rx)?)
     }
 
     /// Stops the streaming.
@@ -547,4 +570,13 @@ pub trait StreamInterface {
         ctrl: &mut dyn DeviceControl,
         payload_rx: Receiver<Vec<u8>>,
     ) -> StreamResult<PayloadStream>;
+
+    /// Starts the generator (same but without the stream interface)
+    /// The output Payload generator does not implement the Stream trait. One uses the next_payload
+    /// method of PayloadGenerator to asynchronously get the next picture.
+    fn start_generator(
+        &self,
+        ctrl: &mut dyn DeviceControl,
+        payload_rx: Receiver<Vec<u8>>,
+    ) -> StreamResult<PayloadGenerator>;
 }

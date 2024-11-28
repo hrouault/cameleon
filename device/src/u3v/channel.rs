@@ -81,38 +81,7 @@ impl ReceiveChannel {
     pub fn is_opened(&self) -> bool {
         self.iface.is_some()
     }
-    //
-    //     pub fn recv(&self, buf: &mut [u8], timeout: time::Duration) -> Result<usize> {
-    //         Ok(self
-    //             .device_handle
-    //             .read_bulk(self.iface_info.bulk_in_ep, buf, timeout)?)
-    //     }
-    //
-    //     pub fn set_halt(&self, timeout: time::Duration) -> Result<()> {
-    //     let request = 0x03; // SET_FEATURE.
-    //     let value = 0x00; // ENDPOINT_HALT.
-    //     let buf = vec![]; // NO DATA.
-    //
-    //     let interface = handle.claim_interface(0).unwrap();
-    //     let result = block_on(interface.control_out(ControlOut {
-    //         control_type: ControlType::Vendor,
-    //         recipient: Recipient::Endpoint,
-    //         request,
-    //         value,
-    //         index: endpoint_number as u16,
-    //         data: &buf,
-    //     }))?;
-    //
-    //     Ok(())
-    //
-    //         Ok(())
-    //     }
-    //
-    //     pub fn clear_halt(&mut self) -> Result<()> {
-    //         self.device_handle.clear_halt(self.iface_info.bulk_in_ep)?;
-    //         Ok(())
-    //     }
-    //
+
     pub(super) fn new(device: nusb::Device, iface_info: ReceiveIfaceInfo) -> Self {
         Self {
             device,
