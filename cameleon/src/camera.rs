@@ -352,6 +352,63 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
         Ok(self.strm.start_streaming(&mut self.ctrl, payload_rx)?)
     }
 
+    /// Starts streaming and returns a [`PayloadGenerator`] instead of a [`PayloadStream`].
+    ///
+    /// This is the "pull" variant of the streaming API: instead of using the
+    /// [`futures_core::Stream`] interface (as in [`Camera::start_streaming`]), you get a
+    /// [`PayloadGenerator`] on which you can call [`PayloadGenerator::next_payload`]
+    /// to asynchronously fetch the next frame when you need it.
+    ///
+    /// The `payload_rx` channel is used to return owned `Vec<u8>` buffers back to the
+    /// streaming loop so they can be reused, reducing allocations. If you don’t care
+    /// about buffer reuse, you can ignore this and just create a simple channel and
+    /// never send anything back.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use cameleon::u3v;
+    /// use std::sync::mpsc;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     // Enumerate cameras connected to the host.
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let mut camera = cameras.pop().unwrap();
+    ///
+    ///     // Open camera and load GenApi context.
+    ///     camera.open().unwrap();
+    ///     camera.load_context().unwrap();
+    ///
+    ///     // Create a reuse channel for frame buffers.
+    ///     let (reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
+    ///
+    ///     // Start the generator-based streaming API.
+    ///     let mut gen = camera.start_generator(reuse_rx).unwrap();
+    ///
+    ///     // Pull a few payloads manually.
+    ///     for _ in 0..10 {
+    ///         let payload = gen.next_payload().await.unwrap();
+    ///
+    ///         println!(
+    ///             "payload received! block_id: {:?}, timestamp: {:?}",
+    ///             payload.id(),
+    ///             payload.timestamp()
+    ///         );
+    ///
+    ///         if let Some(image_info) = payload.image_info() {
+    ///             println!("{:?}", image_info);
+    ///         }
+    ///
+    ///         // Optionally send the buffer back for reuse.
+    ///         payload.return_buffer(&reuse_tx);
+    ///     }
+    ///
+    ///     camera.close().unwrap();
+    /// }
+    /// ```
     #[tracing::instrument(skip(self, payload_rx),
                           level = "info",
                           fields(camera = ?self.info()))]

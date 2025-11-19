@@ -221,7 +221,7 @@ impl PayloadStreamInner {
         Ok(())
     }
 
-    fn parse_leader(&self) -> StreamResult<Leader> {
+    fn parse_leader(&self) -> StreamResult<Leader<'_>> {
         match &self.leader_buf {
             Some(buf) => Ok(u3v_stream::Leader::parse(&buf[..])?),
             None => Err(StreamError::NoBuffer),
@@ -296,7 +296,7 @@ impl PayloadStreamInner {
         Ok(())
     }
 
-    fn parse_trailer(&self) -> StreamResult<Trailer> {
+    fn parse_trailer(&self) -> StreamResult<Trailer<'_>> {
         match &self.trailer_buf {
             Some(buf) => Ok(u3v_stream::Trailer::parse(&buf[..])?),
             None => Err(StreamError::NoBuffer),
@@ -400,11 +400,29 @@ impl Stream for PayloadStream {
     }
 }
 
+/// A helper type that produces payloads one-by-one on demand.
+///
+/// Unlike [`PayloadStream`], which implements [`futures_core::Stream`]
+/// and can be used in `while let Some(...) = stream.next().await` loops,
+/// `PayloadGenerator` exposes a simple async method to fetch the next
+/// payload when you want it.
+///
+/// This is useful if you don't want to depend on the `Stream` trait
+/// or prefer a more manual, pull-based API.
 pub struct PayloadGenerator {
     inner: PayloadStreamInner,
 }
 
 impl PayloadGenerator {
+    /// Asynchronously retrieves the next [`Payload`] from the stream.
+    ///
+    /// This method will:
+    /// - submit the required USB transfers,
+    /// - wait for them to complete,
+    /// - assemble and parse the U3V leader, payload and trailer,
+    /// - and return a fully constructed [`Payload`].
+    ///
+    /// Returns an error if the underlying USB transfer or U3V parsing fails.
     pub async fn next_payload(&mut self) -> StreamResult<Payload> {
         self.inner.next_payload().await
     }

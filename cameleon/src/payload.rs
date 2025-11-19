@@ -11,8 +11,6 @@ pub use cameleon_device::PixelFormat;
 
 use std::time;
 
-use super::{StreamError, StreamResult};
-
 /// Represents Payload type of the image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadType {
