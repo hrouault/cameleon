@@ -13,8 +13,8 @@ use cameleon_device::u3v::{
     self,
     protocol::stream::{self as u3v_stream, Leader, Trailer},
 };
+use futures_lite::future::block_on;
 use futures_lite::Stream;
-use nusb::transfer::{Queue, RequestBuffer};
 use pin_project_lite::pin_project;
 use std::{
     future::Future,
@@ -24,6 +24,11 @@ use std::{
     time::Duration,
 };
 use tracing::{debug, error, info};
+
+use nusb::{
+    transfer::{Buffer, Bulk, In},
+    Endpoint,
+};
 
 use super::register_map::Abrm;
 
@@ -46,7 +51,7 @@ impl StreamHandle {
 
 impl StreamInterface for StreamHandle {
     fn open(&mut self) -> StreamResult<()> {
-        self.stream_channel.open().map_err(|e| {
+        block_on(self.stream_channel.open()).map_err(|e| {
             error!(?e);
             e.into()
         })
@@ -60,24 +65,28 @@ impl StreamInterface for StreamHandle {
     ) -> StreamResult<PayloadStream> {
         let params = StreamParams::from_control(ctrl).map_err(StreamError::StreamParams)?;
 
-        let queue = self
+        let iface = self
             .stream_channel
             .iface
             .clone()
-            .ok_or_else(|| StreamError::NoInterface)?
-            .bulk_in_queue(self.stream_channel.iface_info.bulk_in_ep);
+            .ok_or_else(|| StreamError::NoInterface)?;
+
+        // We expect this endpoint to exist; you can replace `unwrap` with better error mapping.
+        let endpoint = iface
+            .endpoint::<Bulk, In>(self.stream_channel.iface_info.bulk_in_ep)
+            .expect("failed to open bulk IN endpoint for streaming");
 
         Ok(PayloadStream {
             state: PayloadStreamState::Value {
                 value: PayloadStreamInner {
                     params,
                     payload_rx,
-                    queue,
+                    endpoint,
                     leader_buf: None,
                     trailer_buf: None,
                     final1_buf: None,
                     final2_buf: None,
-                    payload_bufs: vec![vec![]],
+                    payload_bufs: Vec::new(),
                     pic_buf: None,
                 },
             },
@@ -92,49 +101,60 @@ impl StreamInterface for StreamHandle {
     ) -> StreamResult<PayloadGenerator> {
         let params = StreamParams::from_control(ctrl).map_err(StreamError::StreamParams)?;
 
-        let queue = self
+        let iface = self
             .stream_channel
             .iface
             .clone()
-            .ok_or_else(|| StreamError::NoInterface)?
-            .bulk_in_queue(self.stream_channel.iface_info.bulk_in_ep);
+            .ok_or_else(|| StreamError::NoInterface)?;
+
+        let endpoint = iface
+            .endpoint::<Bulk, In>(self.stream_channel.iface_info.bulk_in_ep)
+            .expect("failed to open bulk IN endpoint for streaming");
 
         Ok(PayloadGenerator {
             inner: PayloadStreamInner {
                 params,
                 payload_rx,
-                queue,
+                endpoint,
                 leader_buf: None,
                 trailer_buf: None,
                 final1_buf: None,
                 final2_buf: None,
-                payload_bufs: vec![vec![]],
+                payload_bufs: Vec::new(),
                 pic_buf: None,
             },
         })
     }
 }
 
+impl From<StreamHandle> for Box<dyn StreamInterface> {
+    fn from(handle: StreamHandle) -> Self {
+        Box::new(handle)
+    }
+}
+
 pub(crate) struct PayloadStreamInner {
     params: StreamParams,
     payload_rx: Receiver<Vec<u8>>,
-    queue: Queue<RequestBuffer>,
-    leader_buf: Option<Vec<u8>>,
-    trailer_buf: Option<Vec<u8>>,
-    final1_buf: Option<Vec<u8>>,
-    final2_buf: Option<Vec<u8>>,
-    payload_bufs: Vec<Vec<u8>>,
+    endpoint: Endpoint<Bulk, In>,
+    leader_buf: Option<Buffer>,
+    trailer_buf: Option<Buffer>,
+    final1_buf: Option<Buffer>,
+    final2_buf: Option<Buffer>,
+    payload_bufs: Vec<Buffer>,
     pic_buf: Option<Vec<u8>>,
 }
 
 impl PayloadStreamInner {
     fn submit_leader(&mut self) -> StreamResult<()> {
-        let req_buf = if let Some(buf) = self.leader_buf.take() {
-            RequestBuffer::reuse(buf, self.params.leader_size)
+        let mut buf = if let Some(buf) = self.leader_buf.take() {
+            buf
         } else {
-            RequestBuffer::new(self.params.leader_size)
+            Buffer::new(self.params.leader_size)
         };
-        self.queue.submit(req_buf);
+        buf.clear();
+        buf.set_requested_len(self.params.leader_size);
+        self.endpoint.submit(buf);
 
         debug!("Leader size: {}", self.params.leader_size);
 
@@ -144,31 +164,37 @@ impl PayloadStreamInner {
     fn submit_payload(&mut self) -> StreamResult<()> {
         let payload_size = self.params.payload_size;
         for _ in 0..self.params.payload_count {
-            let req_buf = if let Some(buf) = self.payload_bufs.pop() {
-                RequestBuffer::reuse(buf, payload_size)
+            let mut buf = if let Some(buf) = self.payload_bufs.pop() {
+                buf
             } else {
-                RequestBuffer::new(payload_size)
+                Buffer::new(payload_size)
             };
-            self.queue.submit(req_buf);
+            buf.clear();
+            buf.set_requested_len(payload_size);
+            self.endpoint.submit(buf);
             debug!("Payload size: {}", payload_size);
         }
 
         if self.params.payload_final1_size != 0 {
-            let req_buf = if let Some(buf) = self.final1_buf.take() {
-                RequestBuffer::reuse(buf, self.params.payload_final1_size)
+            let mut buf = if let Some(buf) = self.final1_buf.take() {
+                buf
             } else {
-                RequestBuffer::new(self.params.payload_final1_size)
+                Buffer::new(self.params.payload_final1_size)
             };
-            self.queue.submit(req_buf);
+            buf.clear();
+            buf.set_requested_len(self.params.payload_final1_size);
+            self.endpoint.submit(buf);
         }
         debug!("final1 size: {}", self.params.payload_final1_size);
         if self.params.payload_final2_size != 0 {
-            let req_buf = if let Some(buf) = self.final2_buf.take() {
-                RequestBuffer::reuse(buf, self.params.payload_final2_size)
+            let mut buf = if let Some(buf) = self.final2_buf.take() {
+                buf
             } else {
-                RequestBuffer::new(self.params.payload_final2_size)
+                Buffer::new(self.params.payload_final2_size)
             };
-            self.queue.submit(req_buf);
+            buf.clear();
+            buf.set_requested_len(self.params.payload_final2_size);
+            self.endpoint.submit(buf);
         }
         debug!("final2 size: {}", self.params.payload_final2_size);
 
@@ -176,19 +202,21 @@ impl PayloadStreamInner {
     }
 
     fn submit_trailer(&mut self) -> StreamResult<()> {
-        let req_buf = if let Some(buf) = self.trailer_buf.take() {
-            RequestBuffer::reuse(buf, self.params.trailer_size)
+        let mut buf = if let Some(buf) = self.trailer_buf.take() {
+            buf
         } else {
-            RequestBuffer::new(self.params.trailer_size)
+            Buffer::new(self.params.trailer_size)
         };
-        self.queue.submit(req_buf);
+        buf.clear();
+        buf.set_requested_len(self.params.trailer_size);
+        self.endpoint.submit(buf);
         debug!("trailer size: {}", self.params.trailer_size);
 
         Ok(())
     }
 
     async fn read_leader(&mut self) -> StreamResult<()> {
-        let leader_buf = self.queue.next_complete().await.into_result()?;
+        let leader_buf = self.endpoint.next_complete().await.into_result()?;
         self.leader_buf = Some(leader_buf);
         Ok(())
     }
@@ -224,9 +252,9 @@ impl PayloadStreamInner {
             debug!(
                 "Waiting for completion: {}, {} pending transfers",
                 cursor,
-                self.queue.pending()
+                self.endpoint.pending()
             );
-            let completion = self.queue.next_complete().await.into_result()?;
+            let completion = self.endpoint.next_complete().await.into_result()?;
             pic_buf[cursor..cursor + payload_size].clone_from_slice(&completion);
             cursor += payload_size;
             self.payload_bufs.push(completion);
@@ -236,9 +264,9 @@ impl PayloadStreamInner {
             debug!(
                 "Waiting for completion: {}, {} pending transfers",
                 cursor,
-                self.queue.pending()
+                self.endpoint.pending()
             );
-            let completion = self.queue.next_complete().await.into_result()?;
+            let completion = self.endpoint.next_complete().await.into_result()?;
             pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
             cursor += final1;
             self.final1_buf = Some(completion);
@@ -248,10 +276,10 @@ impl PayloadStreamInner {
             debug!(
                 "Waiting for completion: {}, {} pending transfers",
                 cursor,
-                self.queue.pending()
+                self.endpoint.pending()
             );
-            let completion = self.queue.next_complete().await.into_result()?;
-            pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
+            let completion = self.endpoint.next_complete().await.into_result()?;
+            pic_buf[cursor..cursor + final2].clone_from_slice(&completion);
             self.final2_buf = Some(completion);
         }
         self.pic_buf = Some(pic_buf);
@@ -261,9 +289,9 @@ impl PayloadStreamInner {
     async fn read_trailer(&mut self) -> StreamResult<()> {
         debug!(
             "Waiting for completion trailer, {} pending transfers",
-            self.queue.pending()
+            self.endpoint.pending()
         );
-        let trailer_buf = self.queue.next_complete().await.into_result()?;
+        let trailer_buf = self.endpoint.next_complete().await.into_result()?;
         self.trailer_buf = Some(trailer_buf);
         Ok(())
     }

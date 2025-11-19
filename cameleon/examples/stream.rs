@@ -5,17 +5,18 @@
 //! This example describes how to start streaming and receive payloads.
 
 use cameleon::{u3v::enumerate_cameras, CameleonError, CameleonResult};
-use futures_lite::{future, pin, StreamExt};
+use futures_lite::{pin, StreamExt};
 use std::sync::mpsc;
 use tracing::{info, warn};
 
-fn main() -> CameleonResult<()> {
+#[tokio::main]
+async fn main() -> CameleonResult<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
     // Enumerates cameras connected to the host.
-    let mut cameras = enumerate_cameras()?;
+    let mut cameras = enumerate_cameras().await?;
 
     if cameras.is_empty() {
         return Err(CameleonError::NoCamera);
@@ -28,34 +29,29 @@ fn main() -> CameleonResult<()> {
     // Load `GenApi` context.
     camera.load_context()?;
 
-    future::block_on(async {
-        // Start streaming. Can use buffered to add capacity to the stream
-        let (tx, rx) = mpsc::channel();
-        let stream = camera.start_streaming(rx)?.take(10);
+    // Start streaming. Can use buffered to add capacity to the stream
+    let (reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
+    let stream = camera.start_streaming(reuse_rx)?.take(10);
 
-        pin!(stream);
-        while let Some(res) = stream.next().await {
-            let payload = match res {
-                Ok(payload) => payload,
-                Err(e) => {
-                    warn!("payload receive error: {e}");
-                    continue;
-                }
-            };
-            info!(
-                "payload received! block_id: {:?}, timestamp: {:?}",
-                payload.id(),
-                payload.timestamp()
-            );
-            if let Some(image_info) = payload.image_info() {
-                info!("{:?}\n", image_info);
+    pin!(stream);
+    while let Some(res) = stream.next().await {
+        let payload = match res {
+            Ok(payload) => payload,
+            Err(e) => {
+                warn!("payload receive error: {e}");
+                continue;
             }
-            if let Err(err) = tx.send(payload.reuse_payload()) {
-                warn!("The payload could not be sent back: {:?}", err);
-            }
+        };
+        info!(
+            "payload received! block_id: {:?}, timestamp: {:?}",
+            payload.id(),
+            payload.timestamp()
+        );
+        if let Some(image_info) = payload.image_info() {
+            info!("{:?}\n", image_info);
         }
-        Ok::<(), CameleonError>(())
-    })?;
 
+        payload.return_buffer(&reuse_tx);
+    }
     camera.close()
 }

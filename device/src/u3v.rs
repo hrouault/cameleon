@@ -27,9 +27,17 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum U3vError {
-    // NUsb error are actually std::io::Error's
     #[error("nusb error: {0}")]
     NUsb(#[from] nusb::Error),
+
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("expected short packet error: {0}")]
+    ShortPacket(#[from] nusb::io::ExpectedShortPacket),
+
+    #[error("descriptor error: {0}")]
+    Descriptor(#[from] nusb::GetDescriptorError),
 
     #[error("No open interface found")]
     NoInterface,

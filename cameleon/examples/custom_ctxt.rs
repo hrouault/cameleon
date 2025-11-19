@@ -105,8 +105,9 @@ impl From<DefaultGenApiCtxt> for MyGenApiCtxt {
     }
 }
 
-fn main() {
-    let mut cameras = u3v::enumerate_cameras().unwrap();
+#[tokio::main]
+async fn main() {
+    let mut cameras = u3v::enumerate_cameras().await.unwrap();
     if cameras.is_empty() {
         println!("no camera found!");
         return;

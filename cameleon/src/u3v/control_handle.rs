@@ -6,7 +6,6 @@
 
 use futures_lite::future::block_on;
 use futures_time::prelude::*;
-use nusb::transfer::RequestBuffer;
 use std::{
     convert::TryInto,
     io::Read,
@@ -44,27 +43,30 @@ const PAYLOAD_TRANSFER_SIZE: u32 = 1024 * 64;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```rust
 /// use cameleon::{Camera, DeviceControl};
 /// use cameleon::u3v;
 /// use cameleon::genapi;
 ///
-/// // Enumerates cameras connected to the host.
-/// let mut cameras = u3v::enumerate_cameras().unwrap();
+/// #[tokio::main]
+/// async fn main() {
+///     // Enumerates cameras connected to the host.
+///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
 ///
-/// // If no camera is found, return.
-/// if cameras.is_empty() {
-///     return;
+///     // If no camera is found, return.
+///     if cameras.is_empty() {
+///         return;
+///     }
+///     let mut camera = cameras.pop().unwrap();
+///
+///     // Opens the camera.
+///     camera.open().unwrap();
+///
+///     // Read 64bytes from address 0x0184.
+///     let address = 0x0184;
+///     let mut buffer = vec![0; 64];
+///     camera.ctrl.read(address, &mut buffer).unwrap();
 /// }
-/// let mut camera = cameras.pop().unwrap();
-///
-/// // Opens the camera.
-/// camera.open().unwrap();
-///
-/// // Read 64bytes from address 0x0184.
-/// let address = 0x0184;
-/// let mut buffer = vec![0; 64];
-/// camera.ctrl.read(address, &mut buffer).unwrap();
 /// ```
 pub struct ControlHandle {
     inner: u3v::ControlChannel,
@@ -186,7 +188,7 @@ impl ControlHandle {
             next_req_id: 0,
             buffer: None,
             ack_buffer: None,
-            info: device.device_info.clone(),
+            info: device.device_info().clone(),
             abrm: None,
             sbrm: None,
             sirm: None,
@@ -226,6 +228,7 @@ impl ControlHandle {
     {
         let fut_timeout: futures_time::time::Duration = self.config.timeout_duration.into();
 
+        // Build and serialize command
         let cmd = cmd.finalize(self.next_req_id);
         let cmd_len = cmd.cmd_len();
         let mut buf = match self.buffer.take() {
@@ -238,61 +241,59 @@ impl ControlHandle {
             None => vec![0; cmd_len],
         };
         cmd.serialize(buf.as_mut_slice())?;
-        let out_vec = self
-            .inner
-            .send(buf)?
-            .timeout(fut_timeout)
-            .await?
-            .into_result()?;
-        self.buffer = Some(out_vec.reuse());
 
-        let ack_len = cmd.maximum_ack_len();
+        // send phase
+        let send_res = self.inner.send(&buf).timeout(fut_timeout).await?;
+        // Propagate U3vError as ControlError (via From)
+        send_res?;
 
-        // Receive ack and interpret the packet.
+        // Keep buffer for reuse
+        self.buffer = Some(buf);
+
+        // --- ACK PHASE -------------------------------------------------------
         let mut retry_count = self.config.retry_count;
         let mut ok = false;
+
         while retry_count > 0 {
-            // Receive Acknowledge packet from the device.
-            let ack_buf = match self.ack_buffer.take() {
-                Some(buf) => buf,
-                None => vec![0; ack_len],
-            };
-            let future = self
-                .inner
-                .recv(RequestBuffer::reuse(ack_buf, ack_len))?
-                .timeout(fut_timeout);
-            let ack_ret = match future.await {
-                Ok(res) => res.into_result().unwrap(),
+            // Receive full ack message (delimited by short packet).
+            let recv_fut = self.inner.recv_message();
+            let ack_vec_res = recv_fut.timeout(fut_timeout).await;
+
+            let ack_vec = match ack_vec_res {
+                Ok(res) => res.map_err(ControlError::from)?, // U3vError -> ControlError
                 Err(err) => {
                     debug!("Timeout!: {:?}", err);
                     retry_count -= 1;
                     continue;
                 }
             };
-            // Parse Acknowledge packet.
-            let ack = ack::AckPacket::parse(&ack_ret).unwrap();
+
+            // Store the ack buffer on self so the parsed SCD can borrow from it.
+            self.ack_buffer = Some(ack_vec);
+            let ack_slice = self.ack_buffer.as_ref().unwrap().as_slice();
+
+            // Parse and verify
+            let ack = ack::AckPacket::parse(ack_slice).unwrap();
             self.verify_ack(&ack)?;
 
-            // Retry up to retry count.
+            // Handle Pending
             if ack.scd_kind() == ack::ScdKind::Pending {
                 let pending_ack: ack::Pending = ack.scd_as()?;
                 let timeout: futures_time::time::Duration = pending_ack.timeout.into();
                 async {}.delay(timeout).await;
                 retry_count -= 1;
-                self.ack_buffer = Some(ack_ret);
                 continue;
             }
 
+            // Success
             self.next_req_id = self.next_req_id.wrapping_add(1);
             ok = true;
-            self.ack_buffer = Some(ack_ret);
             break;
         }
 
         debug!("Parsing again?");
-        // This codes seems weird due to a lifetime problem.
-        // `ack::AckPacket::parse` is a fast operation, so it's ok to call it repeatedly.
         if ok {
+            // Re-parse SCD from the stored buffer (same trick as before)
             Ok(ack::AckPacket::parse(self.ack_buffer.as_ref().unwrap())
                 .unwrap()
                 .scd_as()?)
@@ -355,9 +356,9 @@ impl DeviceControl for ControlHandle {
             return Ok(());
         }
 
-        unwrap_or_log!(self.inner.open());
+        unwrap_or_log!(block_on(self.inner.open()));
         // Clean up control channel state.
-        unwrap_or_log!(self.inner.clear_halt());
+        unwrap_or_log!(block_on(self.inner.clear_halt()));
         unwrap_or_log!(self.initialize_config());
 
         Ok(())

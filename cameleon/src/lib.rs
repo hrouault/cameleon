@@ -30,84 +30,73 @@
 //! Then, you can enumerate all cameras connected to the host, and start streaming.
 //! ```rust
 //! use cameleon::u3v;
+//! use futures_lite::StreamExt;
+//! use std::sync::mpsc;
 //!
-//! // Enumerates all cameras connected to the host.
-//! let mut cameras = u3v::enumerate_cameras().unwrap();
+//! #[tokio::main]
+//! async fn main() {
+//!     // Enumerates all cameras connected to the host.
+//!     let mut cameras = u3v::enumerate_cameras().await.unwrap();
 //!
-//! if cameras.is_empty() {
-//!     println!("no camera found");
-//!     return;
-//! }
+//!     if cameras.is_empty() {
+//!         println!("no camera found");
+//!         return;
+//!     }
 //!
+//!     let mut camera = cameras.pop().unwrap();
 //!
-//! let mut camera = cameras.pop().unwrap();
+//!     // Opens the camera.
+//!     camera.open().unwrap();
+//!     // Loads `GenApi` context. This is necessary for streaming.
+//!     camera.load_context().unwrap();
 //!
-//! // Opens the camera.
-//! camera.open().unwrap();
-//! // Loads `GenApi` context. This is necessary for streaming.
-//! camera.load_context().unwrap();
+//!     // Create a reuse channel. We won't actually reuse buffers in this example,
+//!     // so we just drop the sender and pass the empty receiver.
+//!     let (_reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
 //!
-//! // Start streaming. Channel capacity is set to 3.
-//! let payload_rx = camera.start_streaming(3).unwrap();
+//!     // Start streaming: get a PayloadStream.
+//!     let mut stream = camera.start_streaming(reuse_rx).unwrap();
 //!
-//! let mut payload_count = 0;
-//! while payload_count < 10 {
-//!     match payload_rx.try_recv() {
-//!         Ok(payload) => {
-//!             println!(
-//!                 "payload received! block_id: {:?}, timestamp: {:?}",
-//!                 payload.id(),
-//!                 payload.timestamp()
-//!             );
-//!             if let Some(image_info) = payload.image_info() {
-//!                 println!("{:?}\n", image_info);
-//!                 let image = payload.image();
-//!                 // do something with the image.
-//!                 // ...
+//!     let mut payload_count = 0;
+//!     while payload_count < 10 {
+//!         match stream.next().await {
+//!             Some(Ok(payload)) => {
+//!                 println!(
+//!                     "payload received! block_id: {:?}, timestamp: {:?}",
+//!                     payload.id(),
+//!                     payload.timestamp()
+//!                 );
+//!
+//!                 if let Some(image_info) = payload.image_info() {
+//!                     println!("{:?}\n", image_info);
+//!                     let image = payload.image();
+//!                     // do something with the image...
+//!                 }
+//!
+//!                 payload_count += 1;
 //!             }
-//!             payload_count += 1;
-//!
-//!             // Send back payload to streaming loop to reuse the buffer. This is optional.
-//!             payload_rx.send_back(payload);
-//!         }
-//!         Err(_err) => {
-//!             continue;
+//!             Some(Err(err)) => {
+//!                 eprintln!("stream error: {err:?}");
+//!                 break;
+//!             }
+//!             None => {
+//!                 // Stream ended.
+//!                 break;
+//!             }
 //!         }
 //!     }
-//! }
 //!
-//! // Closes the camera.
-//! camera.close().unwrap();
+//!     // Closes the camera.
+//!     camera.close().unwrap();
+//! }
 //! ```
 //!
 //! More examples can be found [here][cameleon-example].
 //!
-//! [libusb-url]: https://libusb.info
 //! [cameleon-example]: https://github.com/cameleon-rs/cameleon/tree/main/cameleon/examples
 //!
 //! ## FAQ
 //! ### USB3 Vision
-//! #### How to install `libusb`
-//! ##### Linux/macOS
-//! You need to install [libusb][libusb-url] to the place where `pkg-config` can find. Basically all you have to do is just installing `libusb` through your system package manager like `sudo apt install libusb-1.0-0-dev` or `brew install libusb`.
-//!
-//! If you use Linux, it's probably needed to edit permissions for USB devices. You could add permissions by editing `udev` rules, a configuration example is found [here](https://github.com/cameleon-rs/cameleon/blob/main/misc/u3v.rules).
-//!
-//! ##### Windows
-//! You need to install [libusb][libusb-url] with `vcpkg`, please see [here][libusb-vcpkg] to install `libusb` with `vcpkg`.
-//!
-//! Also, you need to install a driver for your device. You can find resource [here][libusb-driver-installation] for driver-installation.  
-//! NOTE: Make sure to install a driver to a composite device not to its child devices.  
-//! To do this, you need to list all devices connected to the host computer with `zadig` like below.  
-//! ![describe zadig list option][zadig-list-option]
-//!
-//! Then install `WinUSB` to your device.  
-//! ![describe how to install WinUSB driver to your composite device][zadig-composite-device]
-//!
-//! [libusb-vcpkg]: https://github.com/libusb/libusb/wiki/Windows#vcpkg_port
-//! [libusb-driver-installation]: https://github.com/libusb/libusb/wiki/Windows#driver-installation
-//! [zadig-list-option]: https://user-images.githubusercontent.com/6376004/123678264-11720d00-d881-11eb-98aa-eb649fdf3cb2.png
-//! [zadig-composite-device]: https://user-images.githubusercontent.com/6376004/123937380-10e88c00-d9d1-11eb-9999-61439b6db788.png
 //!
 //! #### Why is frame rate so low?
 //! Frame rate can be affected by several reasons.

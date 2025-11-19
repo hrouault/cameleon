@@ -9,9 +9,10 @@ use cameleon::genapi::{DefaultGenApiCtxt, NoCacheGenApiCtxt};
 use cameleon::u3v::{enumerate_cameras, ControlHandle, StreamHandle};
 use cameleon::Camera;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Enumerates cameras connected to the host.
-    let mut cameras = enumerate_cameras().unwrap();
+    let mut cameras = enumerate_cameras().await.unwrap();
     if cameras.is_empty() {
         println!("no camera found!");
         return;

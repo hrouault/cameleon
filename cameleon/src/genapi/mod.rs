@@ -6,36 +6,40 @@
 //!
 //! # Examples
 //! ```rust
-//! # use cameleon::u3v;
-//! # let mut cameras = u3v::enumerate_cameras().unwrap();
-//! # if cameras.is_empty() {
-//! #     return;
-//! # }
-//! # let mut camera = cameras.pop().unwrap();
-//! # camera.open().unwrap();
-//! // Loads `GenApi` context.
-//! camera.load_context().unwrap();
+//! use cameleon::u3v;
 //!
-//! let mut params_ctxt = camera.params_ctxt().unwrap();
-//! // Get `Gain` node of `GenApi`.
-//! // `GenApi SFNC` defines that `Gain` node should have `IFloat` interface,
-//! // so this conversion would be success if the camera follows that.
-//! // Some vendors may define `Gain` node as `IInteger`, in that case, use
-//! // `as_integer(&params_ctxt)` instead of `as_float(&params_ctxt).
-//! let gain_node = params_ctxt.node("Gain").unwrap().as_float(&params_ctxt).unwrap();
+//! #[tokio::main]
+//! async fn main() {
+//!     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+//!     if cameras.is_empty() {
+//!         return;
+//!     }
+//!     let mut camera = cameras.pop().unwrap();
+//!     camera.open().unwrap();
+//!     // Loads `GenApi` context.
+//!     camera.load_context().unwrap();
 //!
-//! // Get the current value of `Gain`.
-//! if gain_node.is_readable(&mut params_ctxt).unwrap() {
-//!     let value = gain_node.value(&mut params_ctxt).unwrap();
-//!     println!("{}", value);
+//!     let mut params_ctxt = camera.params_ctxt().unwrap();
+//!     // Get `Gain` node of `GenApi`.
+//!     // `GenApi SFNC` defines that `Gain` node should have `IFloat` interface,
+//!     // so this conversion would be success if the camera follows that.
+//!     // Some vendors may define `Gain` node as `IInteger`, in that case, use
+//!     // `as_integer(&params_ctxt)` instead of `as_float(&params_ctxt).
+//!     let gain_node = params_ctxt.node("Gain").unwrap().as_float(&params_ctxt).unwrap();
+//!
+//!     // Get the current value of `Gain`.
+//!     if gain_node.is_readable(&mut params_ctxt).unwrap() {
+//!         let value = gain_node.value(&mut params_ctxt).unwrap();
+//!         println!("{}", value);
+//!     }
+//!
+//!     // Set `0.1` to `Gain`.
+//!     if gain_node.is_writable(&mut params_ctxt).unwrap() {
+//!         gain_node.set_value(&mut params_ctxt, 0.1).unwrap();
+//!     }
+//!
+//!     # camera.close().unwrap();
 //! }
-//!
-//! // Set `0.1` to `Gain`.
-//! if gain_node.is_writable(&mut params_ctxt).unwrap() {
-//!     gain_node.set_value(&mut params_ctxt, 0.1).unwrap();
-//! }
-//!
-//! # camera.close().unwrap();
 //! ```
 
 mod node_kind;
@@ -64,40 +68,46 @@ pub use cameleon_genapi::{
     GenApiError, RegisterDescription, ValueCtxt,
 };
 
-/// Manages context of parameters of the device.
-///
 /// # Examples
 /// ```rust
-/// # use cameleon::u3v;
-/// # let mut cameras = u3v::enumerate_cameras().unwrap();
-/// # if cameras.is_empty() {
-/// #     return;
-/// # }
-/// # let mut camera = cameras.pop().unwrap();
-/// # camera.open().unwrap();
-/// // Loads `GenApi` context.
-/// camera.load_context().unwrap();
+/// use cameleon::u3v;
 ///
-/// let mut params_ctxt = camera.params_ctxt().unwrap();
-/// // Get `Gain` node of `GenApi`.
-/// // `GenApi SFNC` defines that `Gain` node should have `IFloat` interface,
-/// // so this conversion would be success if the camera follows that.
-/// // Some vendors may define `Gain` node as `IInteger`, in that case, use
-/// // `as_integer(&params_ctxt)` instead of `as_float(&params_ctxt).
-/// let gain_node = params_ctxt.node("Gain").unwrap().as_float(&params_ctxt).unwrap();
+/// #[tokio::main]
+/// async fn main() {
+///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+///     if cameras.is_empty() {
+///         return;
+///     }
+///     let mut camera = cameras.pop().unwrap();
+///     camera.open().unwrap();
 ///
-/// // Get the current value of `Gain`.
-/// if gain_node.is_readable(&mut params_ctxt).unwrap() {
-///     let value = gain_node.value(&mut params_ctxt).unwrap();
-///     println!("{}", value);
+///     // Loads `GenApi` context.
+///     camera.load_context().unwrap();
+///
+///     let mut params_ctxt = camera.params_ctxt().unwrap();
+///
+///     // Get `Gain` node of `GenApi`.
+///     // `GenApi SFNC` defines that `Gain` node should have `IFloat` interface,
+///     // so this conversion would be success if the camera follows that.
+///     // Some vendors may define `Gain` node as `IInteger`, in that case, use
+///     // `as_integer(&params_ctxt)` instead of `as_float(&params_ctxt)`.
+///     let gain_node = params_ctxt
+///         .node("Gain").unwrap()
+///         .as_float(&params_ctxt).unwrap();
+///
+///     // Get the current value of `Gain`.
+///     if gain_node.is_readable(&mut params_ctxt).unwrap() {
+///         let value = gain_node.value(&mut params_ctxt).unwrap();
+///         println!("{}", value);
+///     }
+///
+///     // Set `0.1` to `Gain`.
+///     if gain_node.is_writable(&mut params_ctxt).unwrap() {
+///         gain_node.set_value(&mut params_ctxt, 0.1).unwrap();
+///     }
+///
+///     camera.close().unwrap();
 /// }
-///
-/// // Set `0.1` to `Gain`.
-/// if gain_node.is_writable(&mut params_ctxt).unwrap() {
-///     gain_node.set_value(&mut params_ctxt, 0.1).unwrap();
-/// }
-///
-/// # camera.close().unwrap();
 /// ```
 #[derive(Debug, Clone)]
 pub struct ParamsCtxt<Ctrl, Ctxt> {

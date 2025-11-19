@@ -7,54 +7,61 @@
 //! # Examples
 //! ```rust
 //! use cameleon::u3v;
+//! use futures_lite::StreamExt;
+//! use std::sync::mpsc;
 //!
-//! // Enumerates all cameras connected to the host.
-//! let mut cameras = u3v::enumerate_cameras().unwrap();
+//! #[tokio::main]
+//! async fn main() {
+//!     // Enumerates all cameras connected to the host.
+//!     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+//!     if cameras.is_empty() {
+//!         println!("no camera found");
+//!         return;
+//!     }
 //!
-//! if cameras.is_empty() {
-//!     println!("no camera found");
-//!     return;
-//! }
+//!     let mut camera = cameras.pop().unwrap();
 //!
+//!     // Opens the camera.
+//!     camera.open().unwrap();
+//!     // Loads `GenApi` context. This is necessary for streaming.
+//!     camera.load_context().unwrap();
 //!
-//! let mut camera = cameras.pop().unwrap();
+//!     // Create a reuse channel for frame buffers.
+//!     let (reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
 //!
-//! // Opens the camera.
-//! camera.open().unwrap();
-//! // Loads `GenApi` context. This is necessary for streaming.
-//! camera.load_context().unwrap();
+//!     // Start streaming and only consume 10 payloads in this example.
+//!     let mut stream = camera.start_streaming(reuse_rx).unwrap().take(10);
 //!
-//! // Start streaming.
-//! let payload_rx = camera.start_streaming().unwrap();
+//!     while let Some(res) = stream.next().await {
+//!         match res {
+//!             Ok(payload) => {
+//!                 println!(
+//!                     "payload received! block_id: {:?}, timestamp: {:?}",
+//!                     payload.id(),
+//!                     payload.timestamp()
+//!                 );
 //!
-//! let mut payload_count = 0;
-//! while payload_count < 10 {
-//!     match payload_rx.try_recv() {
-//!         Ok(payload) => {
-//!             println!(
-//!                 "payload received! block_id: {:?}, timestamp: {:?}",
-//!                 payload.id(),
-//!                 payload.timestamp()
-//!             );
-//!             if let Some(image_info) = payload.image_info() {
-//!                 println!("{:?}\n", image_info);
-//!                 let image = payload.image();
-//!                 // do something with the image.
-//!                 // ...
+//!                 if let Some(image_info) = payload.image_info() {
+//!                     println!("{:?}\n", image_info);
+//!                     if let Some(image) = payload.image() {
+//!                         // do something with the image bytes...
+//!                         let _ = image;
+//!                     }
+//!                 }
+//!
+//!                 // Send back payload buffer to streaming loop to reuse it. This is optional.
+//!                 payload.return_buffer(&reuse_tx);
 //!             }
-//!             payload_count += 1;
-//!
-//!             // Send back payload to streaming loop to reuse the buffer. This is optional.
-//!             payload_rx.send_back(payload);
-//!         }
-//!         Err(_err) => {
-//!             continue;
+//!             Err(_err) => {
+//!                 // handle or log the error as needed
+//!                 continue;
+//!             }
 //!         }
 //!     }
-//! }
 //!
-//! // Closes the camera.
-//! camera.close().unwrap();
+//!     // Closes the camera.
+//!     camera.close().unwrap();
+//! }
 //! ```
 
 use super::{
@@ -71,51 +78,57 @@ use tracing::info;
 /// # Examples
 /// ```rust
 /// use cameleon::u3v;
+/// use futures_lite::StreamExt;
+/// use std::sync::mpsc;
 ///
-/// // Enumerates all cameras connected to the host.
-/// let mut cameras = u3v::enumerate_cameras().unwrap();
-/// if cameras.is_empty() {
-///     println!("no camera found");
-///     return;
-/// }
-/// let mut camera = cameras.pop().unwrap();
+/// #[tokio::main]
+/// # async fn main() {
+///     // Enumerates all cameras connected to the host.
+///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+///     if cameras.is_empty() {
+///         println!("no camera found");
+///         return;
+///     }
+///     let mut camera = cameras.pop().unwrap();
 ///
-/// // Opens the camera.
-/// camera.open().unwrap();
-/// // Loads `GenApi` context. This is necessary for streaming.
-/// camera.load_context().unwrap();
+///     // Opens the camera.
+///     camera.open().unwrap();
+///     // Loads `GenApi` context. This is necessary for streaming.
+///     camera.load_context().unwrap();
 ///
-/// // Start streaming.
-/// let payload_rx = camera.start_streaming().unwrap();
+///     // Create a reuse channel for frame buffers.
+///     let (reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
 ///
-/// let mut payload_count = 0;
-/// while payload_count < 10 {
-///     match payload_rx.try_recv() {
-///         Ok(payload) => {
-///             println!(
-///                 "payload received! block_id: {:?}, timestamp: {:?}",
-///                 payload.id(),
-///                 payload.timestamp()
-///             );
-///             if let Some(image_info) = payload.image_info() {
-///                 println!("{:?}\n", image_info);
-///                 let image = payload.image();
-///                 // do something with the image.
-///                 // ...
+///     // Start streaming and only consume 10 payloads in this example.
+///     let mut stream = camera.start_streaming(reuse_rx).unwrap().take(10);
+///
+///     while let Some(item) = stream.next().await {
+///         match item {
+///             Ok(payload) => {
+///                 println!(
+///                     "payload received! block_id: {:?}, timestamp: {:?}",
+///                     payload.id(),
+///                     payload.timestamp()
+///                 );
+///                 if let Some(image_info) = payload.image_info() {
+///                     println!("{:?}\n", image_info);
+///                     let image = payload.image();
+///                     // do something with the image.
+///                     // ...
+///                 }
+///
+///                 // Send back payload to streaming loop to reuse the buffer. This is optional.
+///                 payload.return_buffer(&reuse_tx);
 ///             }
-///             payload_count += 1;
-///
-///             // Send back payload to streaming loop to reuse the buffer. This is optional.
-///             payload_rx.send_back(payload);
-///         }
-///         Err(_err) => {
-///             continue;
+///             Err(_err) => {
+///                 continue;
+///             }
 ///         }
 ///     }
-/// }
 ///
-/// // Closes the camera.
-/// camera.close().unwrap();
+///     // Closes the camera.
+///     camera.close().unwrap();
+/// }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Camera<Ctrl, Strm, Ctxt = DefaultGenApiCtxt> {
@@ -148,17 +161,22 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     ///
     /// # Examples
     /// ```rust
-    /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let mut camera = cameras.pop().unwrap();
-    /// // Opens the camera before using it.
-    /// camera.open().unwrap();
-    /// // .. Do something with camera.
-    /// // Closes the camera after using it.
-    /// camera.close().unwrap();
+    /// use cameleon::u3v;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let mut camera = cameras.pop().unwrap();
+    ///
+    ///     // Opens the camera before using it.
+    ///     camera.open().unwrap();
+    ///     // .. Do something with camera.
+    ///     // Closes the camera after using it.
+    ///     camera.close().unwrap();
+    /// }
     /// ```
     #[tracing::instrument(skip(self),
                           level = "info",
@@ -178,21 +196,26 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     /// Closes the camera.  
     ///
     /// Make sure to call this method before the camera is dropped.
-    /// To keep flexibility, this method is NOT automatically called when `Camera::drop` is calles.
+    /// To keep flexibility, this method is NOT automatically called when `Camera::drop` is called.
     ///
     /// # Examples
     /// ```rust
-    /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let mut camera = cameras.pop().unwrap();
-    /// // Opens the camera before using it.
-    /// camera.open().unwrap();
-    /// // .. Do something with camera.
-    /// // Closes the camera after using it.
-    /// camera.close().unwrap();
+    /// use cameleon::u3v;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let mut camera = cameras.pop().unwrap();
+    ///
+    ///     // Opens the camera before using it.
+    ///     camera.open().unwrap();
+    ///     // .. Do something with camera.
+    ///     // Closes the camera after using it.
+    ///     camera.close().unwrap();
+    /// }
     /// ```
     #[tracing::instrument(skip(self),
                           level = "info",
@@ -220,21 +243,26 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     ///
     /// # Examples
     /// ```rust
-    /// // Enumerates all cameras connected to the host.
-    /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let mut camera = cameras.pop().unwrap();
-    /// // Opens the camera before using it.
-    /// camera.open().unwrap();
+    /// use cameleon::u3v;
     ///
-    /// // Loads context. This enables you to edit parameters of the camera and start payload streaming.
-    /// camera.load_context().unwrap();
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     // Enumerates all cameras connected to the host.
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let mut camera = cameras.pop().unwrap();
     ///
-    /// // Closes the camera.
-    /// camera.close().unwrap();
+    ///     // Opens the camera before using it.
+    ///     camera.open().unwrap();
+    ///
+    ///     // Loads context. This enables you to edit parameters of the camera and start payload streaming.
+    ///     camera.load_context().unwrap();
+    ///
+    ///     // Closes the camera.
+    ///     camera.close().unwrap();
+    /// }
     /// ```
     pub fn load_context(&mut self) -> CameleonResult<String>
     where
@@ -261,22 +289,38 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     /// # Examples
     /// ```rust
     /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let mut camera = cameras.pop().unwrap();
-    /// camera.open().unwrap();
-    /// camera.load_context().unwrap();
+    /// use futures_lite::StreamExt;
+    /// use std::sync::mpsc;
     ///
-    /// // Start streaming. Channel capacity is set to 3.
-    /// let payload_rx = camera.start_streaming(3).unwrap();
-    /// // The streamed payload can be received like below:
-    /// // payload_rx.recv().await.unwrap() or
-    /// // payload.rx.try_recv().unwrap();
+    ///  #[tokio::main]
+    ///  async fn main() {
+    ///     # let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     # if cameras.is_empty() {
+    ///     #     return;
+    ///     # }
+    ///     # let mut camera = cameras.pop().unwrap();
+    ///     camera.open().unwrap();
+    ///     camera.load_context().unwrap();
+    ///     // Create a reuse channel for frame buffers.
+    ///     let (reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
     ///
-    /// // Closes the camera.
-    /// camera.close().unwrap();
+    ///     // Start streaming.
+    ///     let mut stream = camera.start_streaming(reuse_rx).unwrap();
+    ///
+    ///     // The streamed payloads can be received like this:
+    ///     if let Some(Ok(payload)) = stream.next().await {
+    ///         // Use the payload (image, metadata, etc.).
+    ///         if let Some(image_info) = payload.image_info() {
+    ///             println!("{:?}", image_info);
+    ///         }
+    ///
+    ///         // Optionally send the buffer back for reuse.
+    ///         payload.return_buffer(&reuse_tx);
+    ///     }
+    ///
+    ///     // Closes the camera.
+    ///     camera.close().unwrap();
+    /// }
     /// ```
     ///
     /// # Arguments
@@ -339,9 +383,12 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     /// explicitly when you close the camera.
     ///
     /// # Examples
-    /// ```
+    /// ```rust
     /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
+    /// # use std::sync::mpsc;
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// # let mut cameras = u3v::enumerate_cameras().await.unwrap();
     /// # if cameras.is_empty() {
     /// #     return;
     /// # }
@@ -350,12 +397,17 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     /// // Loads `GenApi` context. This is necessary for streaming.
     /// camera.load_context().unwrap();
     ///
-    /// // Start streaming. Channel capacity is set to 3.
-    /// let payload_rx = camera.start_streaming(3).unwrap();
+    /// // Create a reuse channel for frame buffers.
+    /// let (_reuse_tx, reuse_rx) = mpsc::channel::<Vec<u8>>();
     ///
+    /// // Start streaming.
+    /// let _stream = camera.start_streaming(reuse_rx).unwrap();
+    ///
+    /// // Stop streaming.
     /// camera.stop_streaming().unwrap();
     ///
     /// # camera.close().unwrap();
+    /// # }
     /// ```
     #[tracing::instrument(skip(self),
                           level = "info",
@@ -383,37 +435,46 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     /// See [`load_context`](Self::load_context) and [`set_context`](Self::set_context) how to configure `GenApi` context.
     ///
     /// # Examples
-    /// ```
-    /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let mut camera = cameras.pop().unwrap();
-    /// camera.open().unwrap();
-    /// camera.load_context().unwrap();
+    /// ```rust
+    /// use cameleon::u3v;
     ///
-    /// // Get params context.
-    /// let mut params_ctxt = camera.params_ctxt().unwrap();
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     // Enumerates all cameras connected to the host.
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let mut camera = cameras.pop().unwrap();
     ///
-    /// // Get `Gain` node of `GenApi`.
-    /// // `GenApi SFNC` defines that `Gain` node should have `IFloat` interface,
-    /// // so this conversion would be success if the camera follows that.
-    /// // Some vendors may define `Gain` node as `IInteger`, in that case, use
-    /// // `as_integer(&params_ctxt)` instead of `as_float(&params_ctxt).
-    /// let gain_node = params_ctxt.node("Gain").unwrap().as_float(&params_ctxt).unwrap();
+    ///     camera.open().unwrap();
+    ///     camera.load_context().unwrap();
     ///
-    /// // Get the current value of `Gain`.
-    /// if gain_node.is_readable(&mut params_ctxt).unwrap() {
-    ///     let value = gain_node.value(&mut params_ctxt).unwrap();
-    ///     println!("{}", value);
+    ///     // Get params context.
+    ///     let mut params_ctxt = camera.params_ctxt().unwrap();
+    ///
+    ///     // Get `Gain` node of `GenApi`.
+    ///     // `GenApi SFNC` defines that `Gain` node should have `IFloat` interface,
+    ///     // so this conversion would succeed if the camera follows that.
+    ///     // Some vendors may define `Gain` node as `IInteger`, in that case, use
+    ///     // `as_integer(&params_ctxt)` instead of `as_float(&params_ctxt)`.
+    ///     let gain_node = params_ctxt
+    ///         .node("Gain").unwrap()
+    ///         .as_float(&params_ctxt).unwrap();
+    ///
+    ///     // Get the current value of `Gain`.
+    ///     if gain_node.is_readable(&mut params_ctxt).unwrap() {
+    ///         let value = gain_node.value(&mut params_ctxt).unwrap();
+    ///         println!("{}", value);
+    ///     }
+    ///
+    ///     // Set `0.1` to `Gain`.
+    ///     if gain_node.is_writable(&mut params_ctxt).unwrap() {
+    ///         gain_node.set_value(&mut params_ctxt, 0.1).unwrap();
+    ///     }
+    ///
+    ///     camera.close().unwrap();
     /// }
-    ///
-    /// // Set `0.1` to `Gain`.
-    /// if gain_node.is_writable(&mut params_ctxt).unwrap() {
-    ///     gain_node.set_value(&mut params_ctxt, 0.1).unwrap();
-    /// }
-    /// # camera.close().unwrap();
     /// ```
     pub fn params_ctxt(&mut self) -> CameleonResult<ParamsCtxt<&mut Ctrl, &mut Ctxt>>
     where
@@ -434,15 +495,22 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     /// Returns basic information of the camera.
     ///
     /// This information can be obtained without calling [`Self::open`].
+    ///
     /// # Examples
-    /// ```
-    /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let mut camera = cameras.pop().unwrap();
-    /// let info = camera.info();
+    /// ```rust
+    /// use cameleon::u3v;
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let camera = cameras.pop().unwrap();
+    ///
+    ///     let info = camera.info();
+    ///     println!("{} {} {}", info.vendor_name, info.model_name, info.serial_number);
+    /// }
     /// ```
     pub fn info(&self) -> &CameraInfo {
         &self.info
@@ -481,18 +549,26 @@ impl<Ctrl, Strm, Ctxt> Camera<Ctrl, Strm, Ctxt> {
     ///
     /// # Examples
     /// ```rust
-    /// # use cameleon::u3v;
-    /// # let mut cameras = u3v::enumerate_cameras().unwrap();
-    /// # if cameras.is_empty() {
-    /// #     return;
-    /// # }
-    /// # let camera = cameras.pop().unwrap();
-    /// use cameleon::{DeviceControl, PayloadStream, Camera};
+    /// use cameleon::u3v;
+    /// use cameleon::{DeviceControl, StreamInterface, Camera};
     /// use cameleon::genapi::NoCacheGenApiCtxt;
     ///
-    /// // Convert into `Camera<Box<dyn DeviceControl>, Box<dyn PayloadStream>, NoCacheGenApiCtxt>`.
-    /// let dyn_camera: Camera<Box<dyn DeviceControl>, Box<dyn PayloadStream>, NoCacheGenApiCtxt> =
-    ///     camera.convert_into();
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     // Enumerate cameras.
+    ///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
+    ///     if cameras.is_empty() {
+    ///         return;
+    ///     }
+    ///     let camera = cameras.pop().unwrap();
+    ///
+    ///     // Convert into `Camera<Box<dyn DeviceControl>, Box<dyn StreamInterface>, NoCacheGenApiCtxt>`.
+    ///     let dyn_camera: Camera<
+    ///         Box<dyn DeviceControl>,
+    ///         Box<dyn StreamInterface>,
+    ///         NoCacheGenApiCtxt,
+    ///     > = camera.convert_into();
+    /// }
     /// ```
     pub fn convert_into<Ctrl2, Strm2, Ctxt2>(self) -> Camera<Ctrl2, Strm2, Ctxt2>
     where

@@ -9,41 +9,43 @@
 //!
 //! # Examples
 //!
-//! ```no_run
+//! ```rust
 //! use cameleon::Camera;
 //! use cameleon::u3v;
 //! use cameleon::genapi;
+//! #[tokio::main]
+//! async fn main() {
+//!     // Enumerates cameras connected to the host.
+//!     let mut cameras = u3v::enumerate_cameras().await.unwrap();
 //!
-//! // Enumerates cameras connected to the host.
-//! let mut cameras = u3v::enumerate_cameras().unwrap();
+//!     // If no camera is found, return.
+//!     if cameras.is_empty() {
+//!         return;
+//!     }
 //!
-//! // If no camera is found, return.
-//! if cameras.is_empty() {
-//!     return;
-//! }
+//!     let mut camera = cameras.pop().unwrap();
+//!     // Opens the camera.
+//!     camera.open();
 //!
-//! let mut camera = cameras.pop().unwrap();
-//! // Opens the camera.
-//! camera.open();
+//!     let ctrl = &mut camera.ctrl;
+//!     // Get Abrm.
+//!     let abrm = ctrl.abrm().unwrap();
 //!
-//! let ctrl = &mut camera.ctrl;
-//! // Get Abrm.
-//! let abrm = ctrl.abrm().unwrap();
+//!     // Read serial number from ABRM.
+//!     let serial_number = abrm.serial_number(ctrl).unwrap();
+//!     println!("{}", serial_number);
 //!
-//! // Read serial number from ABRM.
-//! let serial_number = abrm.serial_number(ctrl).unwrap();
-//! println!("{}", serial_number);
+//!     // Check user defined name feature is supported.
+//!     // If it is suppoted, read from and write to the register.
+//!     let device_capability = abrm.device_capability().unwrap();
+//!     if device_capability.is_user_defined_name_supported() {
+//!         // Read from user defined name register.
+//!         let user_defined_name = abrm.user_defined_name(ctrl).unwrap().unwrap();
+//!         println!("{}", user_defined_name);
 //!
-//! // Check user defined name feature is supported.
-//! // If it is suppoted, read from and write to the register.
-//! let device_capability = abrm.device_capability().unwrap();
-//! if device_capability.is_user_defined_name_supported() {
-//!     // Read from user defined name register.
-//!     let user_defined_name = abrm.user_defined_name(ctrl).unwrap().unwrap();
-//!     println!("{}", user_defined_name);
-//!
-//!     // Write new name to the register.
-//!     abrm.set_user_defined_name(ctrl, "cameleon").unwrap();
+//!         // Write new name to the register.
+//!         abrm.set_user_defined_name(ctrl, "cameleon").unwrap();
+//!     }
 //! }
 //! ```
 use std::{convert::TryInto, time::Duration};
@@ -64,41 +66,44 @@ use crate::{genapi::CompressionType, ControlError, ControlResult, DeviceControl}
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```rust
 /// use cameleon::Camera;
 /// use cameleon::u3v;
 /// use cameleon::genapi;
 ///
-/// // Enumerates cameras connected to the host.
-/// let mut cameras = u3v::enumerate_cameras().unwrap();
+/// #[tokio::main]
+/// async fn main() {
+///     // Enumerates cameras connected to the host.
+///     let mut cameras = u3v::enumerate_cameras().await.unwrap();
 ///
-/// // If no camera is found, return.
-/// if cameras.is_empty() {
-///     return;
-/// }
+///     // If no camera is found, return.
+///     if cameras.is_empty() {
+///         return;
+///     }
 ///
-/// let mut camera = cameras.pop().unwrap();
-/// // Opens the camera.
-/// camera.open();
+///     let mut camera = cameras.pop().unwrap();
+///     // Opens the camera.
+///     camera.open();
 ///
-/// let ctrl = &mut camera.ctrl;
-/// // Get Abrm.
-/// let abrm = ctrl.abrm().unwrap();
+///     let ctrl = &mut camera.ctrl;
+///     // Get Abrm.
+///     let abrm = ctrl.abrm().unwrap();
 ///
-/// // Read serial number from ABRM.
-/// let serial_number = abrm.serial_number(ctrl).unwrap();
-/// println!("{}", serial_number);
+///     // Read serial number from ABRM.
+///     let serial_number = abrm.serial_number(ctrl).unwrap();
+///     println!("{}", serial_number);
 ///
-/// // Check user defined name feature is supported.
-/// // If it is suppoted, read from and write to the register.
-/// let device_capability = abrm.device_capability().unwrap();
-/// if device_capability.is_user_defined_name_supported() {
-///     // Read from user defined name register.
-///     let user_defined_name = abrm.user_defined_name(ctrl).unwrap().unwrap();
-///     println!("{}", user_defined_name);
+///     // Check user defined name feature is supported.
+///     // If it is suppoted, read from and write to the register.
+///     let device_capability = abrm.device_capability().unwrap();
+///     if device_capability.is_user_defined_name_supported() {
+///         // Read from user defined name register.
+///         let user_defined_name = abrm.user_defined_name(ctrl).unwrap().unwrap();
+///         println!("{}", user_defined_name);
 ///
-///     // Write new name to the register.
-///     abrm.set_user_defined_name(ctrl, "cameleon").unwrap();
+///         // Write new name to the register.
+///         abrm.set_user_defined_name(ctrl, "cameleon").unwrap();
+///     }
 /// }
 /// ```
 #[derive(Clone, Copy, Debug)]

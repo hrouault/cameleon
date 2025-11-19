@@ -5,12 +5,13 @@
 //! This example describes how to configure parameters of a camera.
 use cameleon::u3v;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let mut cameras = u3v::enumerate_cameras().unwrap();
+    let mut cameras = u3v::enumerate_cameras().await.unwrap();
     if cameras.is_empty() {
         println!("no camera found!");
         return;

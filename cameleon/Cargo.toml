@@ -20,7 +20,6 @@ thiserror = "1.0.24"
 semver = "1.0.0"
 zip = { version = "0.6.0", default-features = false, features = ["deflate"] }
 sha-1 = "0.10.0"
-async-channel = "1.7.0"                                                       # 1.7.0 has added recv_blocking()
 tracing = "0.1.26"
 auto_impl = "1.0.1"
 cameleon-device = { path = "../device", version = "0.1.14" }
@@ -30,11 +29,12 @@ futures-lite = "2.3.0"
 futures-core = "0.3.31"
 futures-time = "3.0.0"
 pin-project-lite = "0.2.15"
-nusb = "0.1.12"
+nusb = { version = "0.2.1", features = ["tokio"] }
 
 [dev-dependencies]
 trybuild = "1.0.42"
 tracing-subscriber = "0.3.18"
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
 
 [[example]]
 name = "u3v_register_map"

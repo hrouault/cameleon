@@ -10,13 +10,12 @@ use cameleon_device::u3v::{
     protocol::{ack, cmd},
     register_map, Device,
 };
-use futures_lite::future::block_on;
-use nusb::transfer::RequestBuffer;
 use std::ffi::CStr;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Enumerate devices connected to the host.
-    let devices: Vec<Device> = enumerate_devices().unwrap().into_iter().collect();
+    let devices: Vec<Device> = enumerate_devices().await.unwrap().into_iter().collect();
 
     if devices.is_empty() {
         println!("no device found");
@@ -31,7 +30,7 @@ fn main() {
     let mut control_channel = device.control_channel().unwrap();
 
     // Open the channel to allow communication with the device.
-    control_channel.open().unwrap();
+    control_channel.open().await.unwrap();
 
     // Get address and length of serial number register in ABRM.
     let (addr, len) = register_map::abrm::SERIAL_NUMBER;
@@ -44,18 +43,10 @@ fn main() {
     command.serialize(&mut serialized_command).unwrap();
 
     //  Send read request to the device.
-    block_on(control_channel.send(serialized_command).unwrap())
-        .into_result()
-        .unwrap();
+    control_channel.send(&serialized_command).await.unwrap();
 
     // Receive Acknowledge packet from the device.
-    let serialized_ack = block_on(
-        control_channel
-            .recv(RequestBuffer::new(command.maximum_ack_len()))
-            .unwrap(),
-    )
-    .into_result()
-    .unwrap();
+    let serialized_ack = control_channel.recv_message().await.unwrap();
 
     // Parse Acknowledge packet.
     let ack = ack::AckPacket::parse(&serialized_ack).unwrap();
