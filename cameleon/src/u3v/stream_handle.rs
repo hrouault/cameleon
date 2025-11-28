@@ -76,12 +76,15 @@ impl StreamInterface for StreamHandle {
             .endpoint::<Bulk, In>(self.stream_channel.iface_info.bulk_in_ep)
             .expect("failed to open bulk IN endpoint for streaming");
 
+        let max_packet_size = endpoint.max_packet_size() as usize;
+
         Ok(PayloadStream {
             state: PayloadStreamState::Value {
                 value: PayloadStreamInner {
                     params,
                     payload_rx,
                     endpoint,
+                    max_packet_size,
                     leader_buf: None,
                     trailer_buf: None,
                     final1_buf: None,
@@ -111,11 +114,14 @@ impl StreamInterface for StreamHandle {
             .endpoint::<Bulk, In>(self.stream_channel.iface_info.bulk_in_ep)
             .expect("failed to open bulk IN endpoint for streaming");
 
+        let max_packet_size = endpoint.max_packet_size() as usize;
+
         Ok(PayloadGenerator {
             inner: PayloadStreamInner {
                 params,
                 payload_rx,
                 endpoint,
+                max_packet_size,
                 leader_buf: None,
                 trailer_buf: None,
                 final1_buf: None,
@@ -137,6 +143,7 @@ pub(crate) struct PayloadStreamInner {
     params: StreamParams,
     payload_rx: Receiver<Vec<u8>>,
     endpoint: Endpoint<Bulk, In>,
+    max_packet_size: usize,
     leader_buf: Option<Buffer>,
     trailer_buf: Option<Buffer>,
     final1_buf: Option<Buffer>,
@@ -146,71 +153,138 @@ pub(crate) struct PayloadStreamInner {
 }
 
 impl PayloadStreamInner {
-    fn submit_leader(&mut self) -> StreamResult<()> {
-        let mut buf = if let Some(buf) = self.leader_buf.take() {
-            buf
+    #[inline]
+    fn align_up(&self, len: usize) -> usize {
+        if len == 0 {
+            0
+        } else if len % self.max_packet_size == 0 {
+            len
         } else {
-            Buffer::new(self.params.leader_size)
+            ((len / self.max_packet_size) + 1) * self.max_packet_size
+        }
+    }
+
+    fn submit_leader(&mut self) -> StreamResult<()> {
+        let logical = self.params.leader_size;
+        let req_len = self.align_up(logical);
+
+        let mut buf = if let Some(buf) = self.leader_buf.take() {
+            if buf.capacity() < req_len {
+                Buffer::new(req_len)
+            } else {
+                buf
+            }
+        } else {
+            Buffer::new(req_len)
         };
+
         buf.clear();
-        buf.set_requested_len(self.params.leader_size);
+        buf.set_requested_len(req_len);
         self.endpoint.submit(buf);
 
-        debug!("Leader size: {}", self.params.leader_size);
+        debug!(
+            "Leader size: logical = {}, usb_requested = {}",
+            logical, req_len
+        );
 
         Ok(())
     }
 
     fn submit_payload(&mut self) -> StreamResult<()> {
         let payload_size = self.params.payload_size;
+        let payload_req = self.align_up(payload_size);
+
+        // Full payload chunks
         for _ in 0..self.params.payload_count {
             let mut buf = if let Some(buf) = self.payload_bufs.pop() {
-                buf
+                if buf.capacity() < payload_req {
+                    Buffer::new(payload_req)
+                } else {
+                    buf
+                }
             } else {
-                Buffer::new(payload_size)
+                Buffer::new(payload_req)
             };
             buf.clear();
-            buf.set_requested_len(payload_size);
+            buf.set_requested_len(payload_req);
             self.endpoint.submit(buf);
-            debug!("Payload size: {}", payload_size);
+            debug!(
+                "Payload size: logical = {}, usb_requested = {}",
+                payload_size, payload_req
+            );
         }
 
-        if self.params.payload_final1_size != 0 {
+        // Final1
+        let final1 = self.params.payload_final1_size;
+        if final1 != 0 {
+            let final1_req = self.align_up(final1);
             let mut buf = if let Some(buf) = self.final1_buf.take() {
-                buf
+                if buf.capacity() < final1_req {
+                    Buffer::new(final1_req)
+                } else {
+                    buf
+                }
             } else {
-                Buffer::new(self.params.payload_final1_size)
+                Buffer::new(final1_req)
             };
             buf.clear();
-            buf.set_requested_len(self.params.payload_final1_size);
+            buf.set_requested_len(final1_req);
             self.endpoint.submit(buf);
+            debug!(
+                "final1 size: logical = {}, usb_requested = {}",
+                final1, final1_req
+            );
+        } else {
+            debug!("final1 size: 0");
         }
-        debug!("final1 size: {}", self.params.payload_final1_size);
-        if self.params.payload_final2_size != 0 {
+
+        // Final2
+        let final2 = self.params.payload_final2_size;
+        if final2 != 0 {
+            let final2_req = self.align_up(final2);
             let mut buf = if let Some(buf) = self.final2_buf.take() {
-                buf
+                if buf.capacity() < final2_req {
+                    Buffer::new(final2_req)
+                } else {
+                    buf
+                }
             } else {
-                Buffer::new(self.params.payload_final2_size)
+                Buffer::new(final2_req)
             };
             buf.clear();
-            buf.set_requested_len(self.params.payload_final2_size);
+            buf.set_requested_len(final2_req);
             self.endpoint.submit(buf);
+            debug!(
+                "final2 size: logical = {}, usb_requested = {}",
+                final2, final2_req
+            );
+        } else {
+            debug!("final2 size: 0");
         }
-        debug!("final2 size: {}", self.params.payload_final2_size);
 
         Ok(())
     }
 
     fn submit_trailer(&mut self) -> StreamResult<()> {
+        let logical = self.params.trailer_size;
+        let req_len = self.align_up(logical);
+
         let mut buf = if let Some(buf) = self.trailer_buf.take() {
-            buf
+            if buf.capacity() < req_len {
+                Buffer::new(req_len)
+            } else {
+                buf
+            }
         } else {
-            Buffer::new(self.params.trailer_size)
+            Buffer::new(req_len)
         };
         buf.clear();
-        buf.set_requested_len(self.params.trailer_size);
+        buf.set_requested_len(req_len);
         self.endpoint.submit(buf);
-        debug!("trailer size: {}", self.params.trailer_size);
+        debug!(
+            "trailer size: logical = {}, usb_requested = {}",
+            logical, req_len
+        );
 
         Ok(())
     }
@@ -247,18 +321,31 @@ impl PayloadStreamInner {
         };
 
         let mut cursor = 0;
-        for _i in 0..self.params.payload_count {
-            let payload_size = self.params.payload_size;
+
+        // Full chunks
+        for _ in 0..self.params.payload_count {
+            let logical = self.params.payload_size;
             debug!(
                 "Waiting for completion: {}, {} pending transfers",
                 cursor,
                 self.endpoint.pending()
             );
             let completion = self.endpoint.next_complete().await.into_result()?;
-            pic_buf[cursor..cursor + payload_size].clone_from_slice(&completion);
-            cursor += payload_size;
+            let got = completion.len();
+            let to_copy = logical.min(got);
+
+            if cursor + to_copy > pic_buf.len() {
+                return Err(StreamError::InvalidPayload(
+                    "payload buffer overflow while copying full chunks".into(),
+                ));
+            }
+
+            pic_buf[cursor..cursor + to_copy].copy_from_slice(&completion[..to_copy]);
+            cursor += to_copy;
             self.payload_bufs.push(completion);
         }
+
+        // Final1
         let final1 = self.params.payload_final1_size;
         if final1 != 0 {
             debug!(
@@ -267,10 +354,21 @@ impl PayloadStreamInner {
                 self.endpoint.pending()
             );
             let completion = self.endpoint.next_complete().await.into_result()?;
-            pic_buf[cursor..cursor + final1].clone_from_slice(&completion);
-            cursor += final1;
+            let got = completion.len();
+            let to_copy = final1.min(got);
+
+            if cursor + to_copy > pic_buf.len() {
+                return Err(StreamError::InvalidPayload(
+                    "payload buffer overflow while copying final1".into(),
+                ));
+            }
+
+            pic_buf[cursor..cursor + to_copy].copy_from_slice(&completion[..to_copy]);
+            cursor += to_copy;
             self.final1_buf = Some(completion);
         }
+
+        // Final2
         let final2 = self.params.payload_final2_size;
         if final2 != 0 {
             debug!(
@@ -279,9 +377,20 @@ impl PayloadStreamInner {
                 self.endpoint.pending()
             );
             let completion = self.endpoint.next_complete().await.into_result()?;
-            pic_buf[cursor..cursor + final2].clone_from_slice(&completion);
+            let got = completion.len();
+            let to_copy = final2.min(got);
+
+            if cursor + to_copy > pic_buf.len() {
+                return Err(StreamError::InvalidPayload(
+                    "payload buffer overflow while copying final2".into(),
+                ));
+            }
+
+            pic_buf[cursor..cursor + to_copy].copy_from_slice(&completion[..to_copy]);
+            cursor += to_copy;
             self.final2_buf = Some(completion);
         }
+
         self.pic_buf = Some(pic_buf);
         Ok(())
     }

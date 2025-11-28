@@ -228,52 +228,67 @@ impl ControlHandle {
     {
         let fut_timeout: futures_time::time::Duration = self.config.timeout_duration.into();
 
-        // Build and serialize command
+        // ----- BUILD & SEND COMMAND -----------------------------------------
         let cmd = cmd.finalize(self.next_req_id);
         let cmd_len = cmd.cmd_len();
+        let ack_len = cmd.maximum_ack_len(); // <-- THIS is key
+
+        // buffer big enough for both command and max ACK
+        let needed = std::cmp::max(cmd_len, ack_len);
         let mut buf = match self.buffer.take() {
             Some(mut buf) => {
-                if buf.len() != cmd_len {
-                    buf.resize(cmd_len, 0);
-                };
+                if buf.len() < needed {
+                    buf.resize(needed, 0);
+                }
                 buf
             }
-            None => vec![0; cmd_len],
+            None => vec![0; needed],
         };
-        cmd.serialize(buf.as_mut_slice())?;
 
-        // send phase
-        let send_res = self.inner.send(&buf).timeout(fut_timeout).await?;
-        // Propagate U3vError as ControlError (via From)
-        send_res?;
+        cmd.serialize(&mut buf[..cmd_len])?;
 
-        // Keep buffer for reuse
+        // send with timeout
+        let send_res = self
+            .inner
+            .send(&buf[..cmd_len])
+            .timeout(fut_timeout)
+            .await?;
+        send_res?; // U3vError -> ControlError via From
+
+        // keep buffer for reuse
         self.buffer = Some(buf);
 
-        // --- ACK PHASE -------------------------------------------------------
+        // ----- ACK PHASE ----------------------------------------------------
         let mut retry_count = self.config.retry_count;
-        let mut ok = false;
+        let mut recv_len_opt: Option<usize> = None;
 
         while retry_count > 0 {
-            // Receive full ack message (delimited by short packet).
-            let recv_fut = self.inner.recv_message();
-            let ack_vec_res = recv_fut.timeout(fut_timeout).await;
+            // Read at most ack_len bytes, like the original read_bulk
+            let recv_res = self
+                .inner
+                .recv(&mut self.buffer.as_mut().unwrap()[..ack_len])
+                .timeout(fut_timeout)
+                .await;
 
-            let ack_vec = match ack_vec_res {
-                Ok(res) => res.map_err(ControlError::from)?, // U3vError -> ControlError
+            let recv_len = match recv_res {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => return Err(ControlError::from(e)),
                 Err(err) => {
-                    debug!("Timeout!: {:?}", err);
+                    tracing::debug!("Timeout waiting for ACK: {:?}", err);
                     retry_count -= 1;
                     continue;
                 }
             };
 
-            // Store the ack buffer on self so the parsed SCD can borrow from it.
-            self.ack_buffer = Some(ack_vec);
-            let ack_slice = self.ack_buffer.as_ref().unwrap().as_slice();
+            let ack_slice = &self.buffer.as_ref().unwrap()[..recv_len];
 
-            // Parse and verify
-            let ack = ack::AckPacket::parse(ack_slice).unwrap();
+            tracing::debug!(
+                "ACK recv: len = {}, first bytes = {:02x?}",
+                ack_slice.len(),
+                &ack_slice[..ack_slice.len().min(32)],
+            );
+
+            let ack = ack::AckPacket::parse(ack_slice)?;
             self.verify_ack(&ack)?;
 
             // Handle Pending
@@ -285,18 +300,16 @@ impl ControlHandle {
                 continue;
             }
 
-            // Success
             self.next_req_id = self.next_req_id.wrapping_add(1);
-            ok = true;
+            recv_len_opt = Some(recv_len);
             break;
         }
 
-        debug!("Parsing again?");
-        if ok {
-            // Re-parse SCD from the stored buffer (same trick as before)
-            Ok(ack::AckPacket::parse(self.ack_buffer.as_ref().unwrap())
-                .unwrap()
-                .scd_as()?)
+        // ----- FINAL PARSE (lifetime trick, like original) ------------------
+        if let Some(recv_len) = recv_len_opt {
+            let ack_slice = &self.buffer.as_ref().unwrap()[..recv_len];
+            let ack = ack::AckPacket::parse(ack_slice)?;
+            Ok(ack.scd_as()?)
         } else {
             Err(ControlError::Io(
                 "the number of times pending was returned exceeds the retry_count.".to_string(),

@@ -8,6 +8,7 @@ use nusb::{
     transfer::{Bulk, In, Out},
     Device, Interface,
 };
+use tokio::io::AsyncReadExt;
 
 pub struct ControlChannel {
     pub(super) device: Device,
@@ -32,7 +33,9 @@ impl ControlChannel {
 
             // Wrap them into async IO adapters.
             let tx = tx_ep.writer(4096).with_num_transfers(4);
-            let rx = rx_ep.reader(4096).with_num_transfers(4);
+            // IN: for control/ACKs, use exactly one max-packet per transfer
+            let max_packet = rx_ep.max_packet_size();
+            let rx = rx_ep.reader(max_packet).with_num_transfers(1); // 1..2 is enough for request/response
 
             self.tx = Some(tx);
             self.rx = Some(rx);
@@ -53,9 +56,21 @@ impl ControlChannel {
         Ok(())
     }
 
-    pub async fn recv_exact(&mut self, buf: &mut [u8]) -> U3vResult<()> {
-        use tokio::io::AsyncReadExt;
+    pub async fn recv(&mut self, buf: &mut [u8]) -> U3vResult<usize> {
+        let rx = self.rx.as_mut().ok_or(U3vError::NoInterface)?;
 
+        // IMPORTANT: use `read`, not `read_exact`
+        let n = rx.read(buf).await?;
+        if n == 0 {
+            return Err(U3vError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "recv: got 0 bytes from control bulk-in endpoint",
+            )));
+        }
+        Ok(n)
+    }
+
+    pub async fn recv_exact(&mut self, buf: &mut [u8]) -> U3vResult<()> {
         let rx = self.rx.as_mut().ok_or(U3vError::NoInterface)?;
         rx.read_exact(buf).await?;
         Ok(())
@@ -63,8 +78,6 @@ impl ControlChannel {
 
     /// Or if your protocol uses "short packet marks end of message":
     pub async fn recv_message(&mut self) -> U3vResult<Vec<u8>> {
-        use tokio::io::AsyncReadExt;
-
         let rx = self.rx.as_mut().ok_or(U3vError::NoInterface)?;
 
         let mut reader = rx.until_short_packet();
@@ -97,7 +110,9 @@ impl ControlChannel {
         if let Some(rx) = self.rx.take() {
             let mut ep = rx.into_inner();
             ep.clear_halt().await?;
-            let rx_wrapped = ep.reader(4096).with_num_transfers(4);
+
+            let max_packet = ep.max_packet_size();
+            let rx_wrapped = ep.reader(max_packet).with_num_transfers(1);
             self.rx = Some(rx_wrapped);
         }
 
