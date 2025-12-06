@@ -28,16 +28,27 @@ const USB3V_SUBCLASS: u8 = 0x05;
 
 pub async fn enumerate_devices() -> U3vResult<Vec<Device>> {
     let device_infos = nusb::list_devices().await?;
-
     let mut result = Vec::new();
 
     for di in device_infos {
         debug!("{:?}", di);
-        if let Some(builder) = DeviceBuilder::new(di).await? {
-            // If build fails, skip that device (keep old behaviour),
-            // or use `?` if you prefer to fail hard.
-            if let Ok(device) = builder.build().await {
-                result.push(device);
+
+        match DeviceBuilder::new(di).await {
+            Ok(Some(builder)) => {
+                match builder.build().await {
+                    Ok(device) => result.push(device),
+                    Err(e) => {
+                        debug!("Failed to build U3V device: {e}");
+                        // skip this one, continue with others
+                    }
+                }
+            }
+            Ok(None) => {
+                // Not a U3V camera / couldn’t be opened / invalid → skip
+            }
+            Err(e) => {
+                // Only truly unexpected errors bubble here; we still skip this device.
+                debug!("Error while probing device: {e}");
             }
         }
     }
@@ -58,17 +69,42 @@ impl DeviceBuilder {
             && di.subclass() == DEVICE_SUBCLASS
             && di.protocol() == DEVICE_PROTOCOL
         {
-            debug!("Found a camera device, opening it...");
-            let device = di.open().await?;
-            debug!("Device open...");
-            if let Some(iad) = Self::find_u3v_iad(&device).await? {
+            debug!("Found a camera-like device: {:?}", di);
+
+            let device = match di.open().await {
+                Ok(dev) => dev,
+                Err(e) => {
+                    debug!("Skipping device {:?}: failed to open: {e}", di);
+                    return Ok(None);
+                }
+            };
+
+            debug!("Device opened, probing for U3V IAD...");
+
+            let iad_opt = match Self::find_u3v_iad(&device).await {
+                Ok(iad_opt) => iad_opt,
+                Err(e) => {
+                    debug!(
+                        "Skipping device {:?}: error while searching U3V IAD: {e}",
+                        di
+                    );
+                    return Ok(None);
+                }
+            };
+
+            if let Some(iad) = iad_opt {
                 return Ok(Some(Self {
                     di,
                     device,
                     u3v_iad: iad,
                 }));
+            } else {
+                // Not actually a U3V device
+                return Ok(None);
             }
         }
+
+        // Class/subclass/protocol do not match → not our device.
         Ok(None)
     }
 
